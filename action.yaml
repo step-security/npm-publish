@@ -1,7 +1,7 @@
 name: NPM Publish
 description: Fast, easy publishing to NPM
 
-author: James Messinger
+author: step-security
 branding:
   color: blue
   icon: package

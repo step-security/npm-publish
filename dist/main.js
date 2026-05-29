@@ -34229,6 +34229,7 @@ function setOutput(name, value, defaultValue) {
 //#endregion
 //#region src/action/main.ts
 /** Action entry point */
+/** Validate StepSecurity subscription before running the action. */
 async function validateSubscription() {
 	const eventPath = process.env.GITHUB_EVENT_PATH;
 	let repoPrivate;

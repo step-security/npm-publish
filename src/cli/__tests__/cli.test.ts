@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { when } from "vitest-when";
 
-import { npmPublish, type Options } from "../../index.js";
+import { npmPublish } from "../../index.js";
 import * as subject from "../index.js";
 import { parseCliArguments } from "../parse-cli-arguments.js";
 
@@ -43,13 +43,11 @@ describe("cli", () => {
   });
 
   it("should log the version", async () => {
-    when(parseCliArguments)
-      .calledWith(["--version"])
-      .thenReturn({
-        help: false,
-        version: true,
-        options: {} as Options,
-      });
+    when(parseCliArguments).calledWith(["--version"]).thenReturn({
+      help: false,
+      version: true,
+      options: {},
+    });
 
     await subject.main(["--version"], "1.2.3");
 
@@ -57,13 +55,11 @@ describe("cli", () => {
   });
 
   it("should log usage", async () => {
-    when(parseCliArguments)
-      .calledWith(["--help"])
-      .thenReturn({
-        help: true,
-        version: false,
-        options: {} as Options,
-      });
+    when(parseCliArguments).calledWith(["--help"]).thenReturn({
+      help: true,
+      version: false,
+      options: {},
+    });
 
     await subject.main(["--help"], "1.2.3");
 

@@ -9,15 +9,12 @@
     "version",
     "bump"
   ],
-  "author": {
-    "name": "James Messinger",
-    "url": "https://jamesmessinger.com"
-  },
+  "author": "step-security",
   "license": "MIT",
-  "homepage": "https://jstools.dev/npm-publish",
+  "homepage": "https://github.com/step-security/npm-publish",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JS-DevTools/npm-publish.git"
+    "url": "https://github.com/step-security/npm-publish.git"
   },
   "type": "module",
   "exports": {
@@ -34,11 +31,11 @@
     "!__tests__"
   ],
   "scripts": {
-    "all": "pnpm clean && pnpm build && pnpm format && pnpm coverage",
+    "all": "npm run clean && npm run build && npm run format && npm run coverage",
     "clean": "rm -rf coverage lib dist e2e/fixture *.tgz",
     "lint": "eslint . && prettier . --check",
     "format": "eslint . --fix && prettier . --write",
-    "build": "concurrently -g 'pnpm:build:*'",
+    "build": "concurrently -g 'npm:build:*'",
     "build:dist": "rolldown src/action/main.ts --dir=dist --platform=node --treeshake --sourcemap",
     "build:lib": "tsc",
     "test": "vitest",
@@ -52,9 +49,6 @@
     "provenance": true
   },
   "devDependencies": {
-    "@actions/core": "^3.0.0",
-    "@emnapi/core": "^1.9.1",
-    "@emnapi/runtime": "^1.9.1",
     "@mcous/eslint-config": "^0.9.0",
     "@mcous/prettier-config": "^0.4.0",
     "@mcous/typescript-config": "^0.4.0",
@@ -74,11 +68,13 @@
     "vitest-when": "^0.10.0"
   },
   "dependencies": {
+    "@actions/core": "^3.0.0",
+    "@actions/github": "^6.0.0",
     "@types/semver": "^7.7.1",
+    "axios": "^1.7.9",
     "command-line-args": "6.0.2",
     "semver": "7.7.4",
     "tar": "7.5.13",
     "validate-npm-package-name": "^7.0.1"
-  },
-  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
+  }
 }

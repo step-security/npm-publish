@@ -54,6 +54,6 @@ export function parseCliArguments(argv: string[]): ParsedArguments {
     version: Boolean(version),
     quiet: Boolean(quiet),
     debug: Boolean(debug),
-    options: options as Options,
+    options: options,
   };
 }

@@ -2,11 +2,9 @@
 
 # Fast, easy publishing to NPM
 
-[![Build Status](https://github.com/JS-DevTools/npm-publish/workflows/CI-CD/badge.svg)](https://github.com/JS-DevTools/npm-publish/actions)
-[![Coverage Status](https://coveralls.io/repos/github/JS-DevTools/npm-publish/badge.svg?branch=main)](https://coveralls.io/github/JS-DevTools/npm-publish)
+[![Build Status](https://github.com/step-security/npm-publish/workflows/CI-CD/badge.svg)](https://github.com/step-security/npm-publish/actions)
 [![npm](https://img.shields.io/npm/v/@jsdevtools/npm-publish.svg)](https://www.npmjs.com/package/@jsdevtools/npm-publish)
 [![License](https://img.shields.io/npm/l/@jsdevtools/npm-publish.svg)](LICENSE)
-[![Buy us a tree](https://img.shields.io/badge/Treeware-%F0%9F%8C%B3-lightgreen)](https://plant.treeware.earth/JS-DevTools/npm-publish)
 
 Publish packages to npm automatically in GitHub Actions whenever a change to your package's `version` field is detected.
 
@@ -15,7 +13,7 @@ Publish packages to npm automatically in GitHub Actions whenever a change to you
 - [v2 to v4 migration guide](#v2-to-v4)
 - [v1 to v4 migration guide](#v1-to-v4)
 
-[releases]: https://github.com/JS-DevTools/npm-publish/releases
+[releases]: https://github.com/step-security/npm-publish/releases
 
 ## ⚠️ You probably don't need this!
 
@@ -98,14 +96,14 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npm test
-      - uses: JS-DevTools/npm-publish@v4
+      - uses: step-security/npm-publish@v4
 ```
 
 > [!IMPORTANT]
 > If you're publishing a private package with [trusted publishing][], you will still need to provide a read-only [`token`][npm authentication token] so the action can read existing versions from the registry before publish.
 >
 > ```diff
->   - uses: JS-DevTools/npm-publish@v4
+>   - uses: step-security/npm-publish@v4
 > +   with:
 > +     token: ${{ secrets.NPM_TOKEN }}
 > ```
@@ -130,7 +128,7 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npm test
-      - uses: JS-DevTools/npm-publish@v4
+      - uses: step-security/npm-publish@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           registry: "https://npm.pkg.github.com"
@@ -171,7 +169,7 @@ npm-publish exposes several output variables, which you can use in later steps o
 
 ```diff
   steps:
-    - uses: JS-DevTools/npm-publish@v4
+    - uses: step-security/npm-publish@v4
 +     id: publish
 
 +   - if: ${{ steps.publish.outputs.type }}
@@ -384,7 +382,7 @@ The `check-version` and `greater-version-only` boolean options were replaced wit
       node-version: '24'
 +     registry-url: https://registry.npmjs.org/
 
-- - uses: JS-DevTools/npm-publish@v1
+- - uses: step-security/npm-publish@v1
 -   with:
 -     token: ${{ secrets.NPM_TOKEN }}
 -     check-version: false
@@ -412,8 +410,8 @@ The `--ignore-scripts` option is now passed to `npm publish` as a security preca
 ```diff
 + - run: npm run build
 
-- - uses: JS-DevTools/npm-publish@v1
-+ - uses: JS-DevTools/npm-publish@v4
+- - uses: step-security/npm-publish@v1
++ - uses: step-security/npm-publish@v4
     with:
       token: ${{ secrets.NPM_TOKEN }}
 ```
@@ -421,8 +419,8 @@ The `--ignore-scripts` option is now passed to `npm publish` as a security preca
 If you can't change your build, you can set the `ignore-scripts` input to `false` as a workaround. Be aware that failures during a lifecycle script can be difficult to debug, and any `stdout`/`stderr` output from your build script could interfere with how `npm-publish` interprets results from the `npm` CLI.
 
 ```diff
-- - uses: JS-DevTools/npm-publish@v1
-+ - uses: JS-DevTools/npm-publish@v4
+- - uses: step-security/npm-publish@v1
++ - uses: step-security/npm-publish@v4
     with:
       token: ${{ secrets.NPM_TOKEN }}
 +     ignore-scripts: false
@@ -436,8 +434,8 @@ The global `.npmrc` file is no longer read nor modified. This means the `token` 
       node-version: '24'
       registry-url: https://registry.npmjs.org/
 
-- - uses: JS-DevTools/npm-publish@v1
-+ - uses: JS-DevTools/npm-publish@v4
+- - uses: step-security/npm-publish@v1
++ - uses: step-security/npm-publish@v4
     with:
       token: ${{ secrets.NPM_TOKEN }}
 
@@ -448,13 +446,11 @@ The global `.npmrc` file is no longer read nor modified. This means the `token` 
 +     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-[#15]: https://github.com/JS-DevTools/npm-publish/issues/15
+[#15]: https://github.com/step-security/npm-publish/issues/15
 
 ## License
 
 npm-publish is 100% free and open-source, under the [MIT license](LICENSE). Use it however you want.
-
-This package is [Treeware](http://treeware.earth). If you use it in production, then we ask that you [**buy the world a tree**](https://plant.treeware.earth/JS-DevTools/npm-publish) to thank us for our work. By contributing to the Treeware forest you’ll be creating employment for local families and restoring wildlife habitats.
 
 ## Big Thanks To
 
