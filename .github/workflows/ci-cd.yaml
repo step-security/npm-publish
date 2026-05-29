@@ -116,18 +116,31 @@ jobs:
           echo "token=$(./e2e/00-login.sh)" >> "$GITHUB_OUTPUT"
           echo "package=$(./e2e/01-setup-package.sh ./e2e/fixture/cool\ package 0.0.1)" >> "$GITHUB_OUTPUT"
 
-      - name: Run CLI end-to-end test
-        shell: bash
-        env:
-          TOKEN: ${{ steps.setup.outputs.token }}
-          PACKAGE: ${{ steps.setup.outputs.package }}
+      - id: action-publish-initial-dry
+        name: Dry-run initial publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check initial dry-run output
+        if: ${{ steps.action-publish-initial-dry.outputs.type != 'initial' }}
         run: |
-          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
-          ./e2e/03-verify.sh "${PACKAGE}"
-          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
-          ./e2e/01-setup-package.sh "${PACKAGE}" 0.0.2
-          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
-          ./e2e/03-verify.sh "${PACKAGE}"
+          echo "::error::Expected release type to be 'initial', got '${{ steps.action-publish-initial-dry.outputs.type }}'"
+          exit 1
+
+      - id: action-publish-initial
+        name: Publish initial version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Verify initial publish
+        run: ./e2e/03-verify.sh "${{ steps.setup.outputs.package }}"
 
       - id: action-no-publish
         name: Publish with already published version
@@ -137,18 +150,18 @@ jobs:
           package: ${{ steps.setup.outputs.package }}/package.json
           token: ${{ steps.setup.outputs.token }}
 
-      - name: Check action output
+      - name: Check no-publish output
         if: ${{ steps.action-no-publish.outputs.type }}
         run: |
           echo "::error::Expected release type to be '', got '${{ steps.action-no-publish.outputs.type }}'"
           exit 1
 
-      - name: Create new version for Action end-to-end test
+      - name: Bump fixture version to 0.0.2
         shell: bash
-        run: ./e2e/01-setup-package.sh "${{ steps.setup.outputs.package }}" 0.0.3
+        run: ./e2e/01-setup-package.sh "${{ steps.setup.outputs.package }}" 0.0.2
 
-      - id: action-publish-dry-before
-        name: Publish a dry run before publish
+      - id: action-publish-patch-dry
+        name: Dry-run patch publish
         uses: ./
         with:
           registry: http://localhost:4873
@@ -156,28 +169,25 @@ jobs:
           token: ${{ steps.setup.outputs.token }}
           dry-run: true
 
-      - name: Check release output
-        if: ${{ steps.action-publish-dry-before.outputs.type != 'patch' }}
+      - name: Check patch dry-run output
+        if: ${{ steps.action-publish-patch-dry.outputs.type != 'patch' }}
         run: |
-          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish-dry-before.outputs.type }}'"
+          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish-patch-dry.outputs.type }}'"
           exit 1
 
-      - id: action-publish
-        name: Publish a new version
+      - id: action-publish-patch
+        name: Publish patch version
         uses: ./
         with:
           registry: http://localhost:4873
           package: ${{ steps.setup.outputs.package }}/package.json
           token: ${{ steps.setup.outputs.token }}
 
-      - name: Check release output
-        if: ${{ steps.action-publish.outputs.type != 'patch' }}
-        run: |
-          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish.outputs.type }}'"
-          exit 1
+      - name: Verify patch publish
+        run: ./e2e/03-verify.sh "${{ steps.setup.outputs.package }}"
 
       - id: action-publish-dry-after
-        name: Publish a dry run after publish
+        name: Dry-run after patch publish
         uses: ./
         with:
           registry: http://localhost:4873
@@ -185,43 +195,9 @@ jobs:
           token: ${{ steps.setup.outputs.token }}
           dry-run: true
 
-      - name: Check release output
+      - name: Check post-publish dry-run output
         if: ${{ steps.action-publish-dry-after.outputs.type }}
         run: |
           echo "::error::Expected release type to be '', got '${{ steps.action-publish-dry-after.outputs.type }}'"
           exit 1
 
-  deploy:
-    if: ${{ github.ref == 'refs/heads/main' }}
-    name: Publish
-    runs-on: ubuntu-latest
-    environment: npm
-    timeout-minutes: 10
-
-    permissions:
-      contents: read
-      id-token: write
-
-    needs:
-      - test
-      - build
-      - e2e
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v6
-
-      - name: Install Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          package-manager-cache: false
-
-      - name: Download publish artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: publish-artifact
-          path: lib
-
-      - name: Publish to NPM
-        uses: ./

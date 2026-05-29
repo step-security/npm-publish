@@ -3,15 +3,9 @@
 # Fast, easy publishing to NPM
 
 [![Build Status](https://github.com/step-security/npm-publish/workflows/CI-CD/badge.svg)](https://github.com/step-security/npm-publish/actions)
-[![npm](https://img.shields.io/npm/v/@jsdevtools/npm-publish.svg)](https://www.npmjs.com/package/@jsdevtools/npm-publish)
 [![License](https://img.shields.io/npm/l/@jsdevtools/npm-publish.svg)](LICENSE)
 
 Publish packages to npm automatically in GitHub Actions whenever a change to your package's `version` field is detected.
-
-- [Change log][releases]
-- [v3 to v4 migration guide](#v3-to-v4)
-- [v2 to v4 migration guide](#v2-to-v4)
-- [v1 to v4 migration guide](#v1-to-v4)
 
 [releases]: https://github.com/step-security/npm-publish/releases
 
@@ -65,16 +59,6 @@ See GitHub's [Node.js publishing][] guide and npm's [trusted publishing][] docs 
   Exposes the old and new version numbers, and the type of change (major, minor, patch, etc.) as variables that you can use in your workflow.
 
 ## Usage
-
-This package can be used three different ways:
-
-- 🤖 A [**GitHub Action**](#github-action) as part of your CI/CD process
-
-- 🧩 A [**function**](#javascript-api) that you call in your JavaScript code
-
-- 🖥 A [**CLI**](#command-line-interface) that you run in your terminal
-
-## GitHub Action
 
 To use the GitHub Action, you'll need to add it as a step in your [workflow file][]. By default, the only thing you need to do is set `permissions.id-token` to `write` to enable [trusted publishing][] via OIDC.
 
@@ -190,169 +174,6 @@ npm-publish exposes several output variables, which you can use in later steps o
 
 [semver release type]: https://github.com/npm/node-semver#release_types
 
-## JavaScript API
-
-To use npm-package in your JavaScript code, you'll need to install it using [npm][] or other package manager of choice:
-
-```bash
-npm install --save-dev @jsdevtools/npm-publish
-```
-
-You can then import it and use it in your code like this:
-
-```javascript
-import { npmPublish } from "@jsdevtools/npm-publish";
-
-// Run npm-publish with all defaults
-await npmPublish({ token: "YOUR_NPM_AUTH_TOKEN_HERE" });
-```
-
-[npm]: https://docs.npmjs.com/about-npm/
-
-### API usage
-
-As shown in the example above, you should pass an options object to the `npmPublish` function. In TypeScript, the `Options` interface is available as an import.
-
-```ts
-import type { Options } from "@jsdevtools/npm-publish";
-```
-
-| Name                 | Type                   | Default                       | Description                                                                      |
-| -------------------- | ---------------------- | ----------------------------- | -------------------------------------------------------------------------------- |
-| `token`              | string                 | None                          | Registry authentication token, not required if using [trusted publishing][]³     |
-| `registry`¹          | string, `URL`          | `https://registry.npmjs.org/` | Registry URL to use.                                                             |
-| `package`            | string                 | Current working directory     | Path to a package directory, a `package.json`, or a packed `.tgz` to publish.    |
-| `tag`¹               | string                 | `latest`                      | [Distribution tag][npm-tag] to publish to.                                       |
-| `access`¹            | `public`, `restricted` | [npm defaults][npm-access]    | Whether the package should be publicly visible or restricted.                    |
-| `provenance`¹ ²      | boolean                | `false`                       | Run `npm publish` with the `--provenance` flag to add [provenance][] statements. |
-| `strategy`           | `all`, `upgrade`       | `all`                         | Use `all` to publish all unique versions, `upgrade` for only semver upgrades.    |
-| `ignoreScripts`      | boolean                | `true`                        | Run `npm publish` with the `--ignore-scripts` flag as a security precaution.     |
-| `dryRun`             | boolean                | `false`                       | Run `npm publish` with the `--dry-run` flag to prevent publication.              |
-| `logger`             | object                 | None                          | Logging interface with `debug`, `info`, and `error` log methods.                 |
-| `temporaryDirectory` | string                 | `os.tmpdir()`                 | Temporary directory to hold a generated `.npmrc` file                            |
-
-1. May be specified using `publishConfig` in `package.json`.
-2. Provenance requires npm `>=9.5.0`.
-3. Trusted publishing npm `>=11.5.1` and must be run from a supported cloud provider.
-
-### API output
-
-The `npmPublish()` function returns a promise of a `Results` object. In TypeScript, the `Results` interface is available as an import.
-
-```ts
-import type { Results } from "@jsdevtools/npm-publish";
-```
-
-| Name         | Type            | Description                                                                                                     |
-| ------------ | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `id`         | Optional string | Package identifier of the release: `${name}@${version}` or `undefined` if no release.                           |
-| `type`       | Optional string | [Semver release type][], `initial` if first release, `different` if other change, or `undefined` if no release. |
-| `name`       | string          | Name of the package.                                                                                            |
-| `version`    | string          | Version of the package.                                                                                         |
-| `oldVersion` | Optional string | Previously published version on `tag` or `undefined` if no previous version.                                    |
-| `tag`        | string          | [Distribution tag][npm-tag] that the package was published to.                                                  |
-| `access`     | Optional string | [Access level][npm-access] the package was published with, or `undefined` if scoped-package defaults were used. |
-| `registry`   | `URL`           | Registry the package was published to.                                                                          |
-| `dryRun`     | boolean         | Whether `npm publish` was run in "dry run" mode.                                                                |
-
-## Command Line Interface
-
-You can also use `npm-publish` as a command-line tool in your terminal.
-
-```bash
-npm install --save-dev @jsdevtools/npm-publish
-```
-
-You can then use it in your terminal or in `npm run` scripts.
-
-```bash
-npx npm-publish --token YOUR_NPM_AUTH_TOKEN_HERE
-```
-
-You can customize your call with options to change the registry, package, etc.
-
-```bash
-npx npm-publish --token YOUR_NPM_AUTH_TOKEN_HERE --registry http://example.com ./path/to/package
-```
-
-### Options
-
-Run `npm-publish --help` to see the full list of options available.
-
-```text
-Usage:
-
-  npm-publish <options> [package]
-
-Arguments:
-
-  package                 The path to the package to publish.
-                          May be a directory, package.json, or .tgz file.
-                          Defaults to the package in the current directory.
-
-Options:
-
-  --token <token>         npm authentication token.
-                          Not required if using trusted publishing.
-                          See npm documentation for details.
-
-  --registry <url>        Registry to read from and write to.
-                          Defaults to "https://registry.npmjs.org/".
-
-  --tag <tag>             The distribution tag to check against and publish to.
-                          Defaults to "latest".
-
-  --access <access>       Package access, may be "public" or "restricted".
-                          See npm documentation for details.
-
-  --provenance            Publish with provenance statements.
-                          See npm documentation for details.
-
-  --strategy <strategy>   Publish strategy, may be "all" or "upgrade".
-                          Defaults to "all", see documentation for details.
-
-  --no-ignore-scripts     Allow lifecycle scripts, which are disabled by default
-                          as a security precaution. Defaults to false.
-
-  --dry-run               Do not actually publish anything.
-  --quiet                 Only print errors.
-  --debug                 Print debug logs.
-
-  -v, --version           Print the version number.
-  -h, --help              Show usage text.
-
-Examples:
-
-  $ npm-publish --token abc123 ./my-package
-```
-
-## Migration guides
-
-Major releases of the action and libraries may contain breaking changes, documented here.
-For more detailed change logs, see [releases][].
-
-### v3 to v4
-
-The `v4` release does not require any changes to how you use the `npm-publish` action from `v3`. The action was updated to Node 24 / npm 11.
-
-In the library and CLI, support for Node 16 and Node 18 was dropped in `v4`, and the library API was switched to ESM-only. Library users should switch to ESM or update Node to a version with support for [loading ES modules using `require`][esm-require].
-
-[esm-require]: https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require
-
-### v2 to v4
-
-The `v4` release does not require any changes to how you use the `npm-publish` action from `v2`. The action was updated to Node 20 in `v3` due to GitHub Action's [deprecation of Node 16][node16-deprecation], and then updated to Node 24 in `v4`.
-
-In the library and CLI, support for Node 16 and Node 18 was dropped in `v4`, and the library API was switched to ESM-only. Library users should switch to ESM or update Node to a version with support for [loading ES modules using `require`][esm-require].
-
-[node16-deprecation]: https://github.blog/changelog/2023-09-22-github-actions-transitioning-from-node-16-to-node-20/
-
-### v1 to v4
-
-The v2 release made several breaking changes to inputs, outputs, and behaviors that were present in `v1`. The examples below focus on the action, but the same changes are applicable to the library and CLI, too.
-
-In the library and CLI, support for Node 16 and Node 18 was dropped in `v4`, and the library API was switched to ESM-only. Library users should switch to ESM or update Node to a version with support for [loading ES modules using `require`][esm-require].
-
 #### option changes
 
 The `check-version` and `greater-version-only` boolean options were replaced with the `strategy` option:
@@ -426,7 +247,7 @@ If you can't change your build, you can set the `ignore-scripts` input to `false
 +     ignore-scripts: false
 ```
 
-The global `.npmrc` file is no longer read nor modified. This means the `token` option is now required for the library and CLI. (It was already required for the action.) You may have workarounds in place referencing `INPUT_TOKEN`, which v1 [erroneously wrote][#15] to `.npmrc`. These workarounds should be removed.
+The global `.npmrc` file is no longer read nor modified. You may have workarounds in place referencing `INPUT_TOKEN`, which v1 [erroneously wrote][#15] to `.npmrc`. These workarounds should be removed.
 
 ```diff
   - uses: actions/setup-node@v6
@@ -446,16 +267,6 @@ The global `.npmrc` file is no longer read nor modified. This means the `token` 
 +     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-[#15]: https://github.com/step-security/npm-publish/issues/15
-
 ## License
 
 npm-publish is 100% free and open-source, under the [MIT license](LICENSE). Use it however you want.
-
-## Big Thanks To
-
-Thanks to these awesome companies for their support of Open Source developers ❤
-
-[![GitHub](https://jstools.dev/img/badges/github.svg)](https://github.com/open-source)
-[![NPM](https://jstools.dev/img/badges/npm.svg)](https://www.npmjs.com/)
-[![Coveralls](https://jstools.dev/img/badges/coveralls.svg)](https://coveralls.io)
