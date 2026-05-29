@@ -1,0 +1,262 @@
+name: CI-CD
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+  # run CI every Monday at 12:25 UTC
+  schedule:
+    - cron: "25 12 * * 1"
+
+jobs:
+  test:
+    name: Unit tests / Node.js ${{ matrix.node-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        node-version:
+          - "20"
+          - "22"
+          - "24"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Install Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm coverage
+
+      - name: Send code coverage results to Coveralls
+        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.6
+        with:
+          parallel: true
+          flag-name: Node.js ${{ matrix.node-version }} / ${{ matrix.os }}
+          fail-on-error: false
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: test
+    steps:
+      - name: Let Coveralls know that all tests have finished
+        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.6
+        with:
+          parallel-finished: true
+          fail-on-error: false
+
+  build:
+    name: Build and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install development dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify no un-staged changes
+        run: |
+          git status --porcelain
+          git diff-files --quiet
+
+      - name: Run lints
+        run: pnpm lint
+
+      - name: Upload publish artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-artifact
+          path: lib
+
+  e2e:
+    name: E2E tests / Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - "20"
+          - "22"
+          - "24"
+
+    services:
+      verdaccio:
+        image: verdaccio/verdaccio:5
+        ports:
+          - 4873:4873
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install production dependencies
+        run: pnpm install --production
+
+      - name: Download publish artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: publish-artifact
+          path: lib
+
+      - id: setup
+        name: Login to local registry and set up fixture package
+        shell: bash
+        run: |
+          echo "token=$(./e2e/00-login.sh)" >> "$GITHUB_OUTPUT"
+          echo "package=$(./e2e/01-setup-package.sh ./e2e/fixture/cool\ package 0.0.1)" >> "$GITHUB_OUTPUT"
+
+      - name: Run CLI end-to-end test
+        shell: bash
+        env:
+          TOKEN: ${{ steps.setup.outputs.token }}
+          PACKAGE: ${{ steps.setup.outputs.package }}
+        run: |
+          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
+          ./e2e/03-verify.sh "${PACKAGE}"
+          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
+          ./e2e/01-setup-package.sh "${PACKAGE}" 0.0.2
+          ./e2e/02-publish.sh "${PACKAGE}" ${TOKEN}
+          ./e2e/03-verify.sh "${PACKAGE}"
+
+      - id: action-no-publish
+        name: Publish with already published version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Check action output
+        if: ${{ steps.action-no-publish.outputs.type }}
+        run: |
+          echo "::error::Expected release type to be '', got '${{ steps.action-no-publish.outputs.type }}'"
+          exit 1
+
+      - name: Create new version for Action end-to-end test
+        shell: bash
+        run: ./e2e/01-setup-package.sh "${{ steps.setup.outputs.package }}" 0.0.3
+
+      - id: action-publish-dry-before
+        name: Publish a dry run before publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check release output
+        if: ${{ steps.action-publish-dry-before.outputs.type != 'patch' }}
+        run: |
+          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish-dry-before.outputs.type }}'"
+          exit 1
+
+      - id: action-publish
+        name: Publish a new version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Check release output
+        if: ${{ steps.action-publish.outputs.type != 'patch' }}
+        run: |
+          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish.outputs.type }}'"
+          exit 1
+
+      - id: action-publish-dry-after
+        name: Publish a dry run after publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check release output
+        if: ${{ steps.action-publish-dry-after.outputs.type }}
+        run: |
+          echo "::error::Expected release type to be '', got '${{ steps.action-publish-dry-after.outputs.type }}'"
+          exit 1
+
+  deploy:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    name: Publish
+    runs-on: ubuntu-latest
+    environment: npm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      id-token: write
+
+    needs:
+      - test
+      - build
+      - e2e
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Download publish artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: publish-artifact
+          path: lib
+
+      - name: Publish to NPM
+        uses: ./
