@@ -34295,7 +34295,10 @@ async function main() {
 }
 //#endregion
 //#region src/action/entry.ts
-/** Bundled action entry point — invokes main() so action.yaml can point at dist/ directly. */
+/**
+* Bundled action entry point — invokes main() so action.yaml can point at dist/
+* directly.
+*/
 await main();
 //#endregion
 export {};
