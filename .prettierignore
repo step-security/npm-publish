@@ -1,0 +1,6 @@
+dist
+lib
+coverage
+.nyc_output
+package-lock.json
+.github/workflows

@@ -1,0 +1,203 @@
+name: CI-CD
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Unit tests / Node.js ${{ matrix.node-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ${{ github.actor == 'dependabot[bot]' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+        node-version:
+          - ${{ github.actor == 'dependabot[bot]' && fromJSON('["20"]') || fromJSON('["20", "22", "24"]') }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run coverage
+
+  build:
+    name: Build and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install development dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify no un-staged changes
+        run: |
+          git status --porcelain
+          git diff-files --quiet
+
+      - name: Run lints
+        run: npm run lint
+
+      - name: Upload publish artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-artifact
+          path: lib
+
+  e2e:
+    name: E2E tests / Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - ${{ github.actor == 'dependabot[bot]' && fromJSON('["20"]') || fromJSON('["20", "22", "24"]') }}
+
+    services:
+      verdaccio:
+        image: verdaccio/verdaccio:5
+        ports:
+          - 4873:4873
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Download publish artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: publish-artifact
+          path: lib
+
+      - id: setup
+        name: Login to local registry and set up fixture package
+        shell: bash
+        run: |
+          echo "token=$(./e2e/00-login.sh)" >> "$GITHUB_OUTPUT"
+          echo "package=$(./e2e/01-setup-package.sh ./e2e/fixture/cool\ package 0.0.1)" >> "$GITHUB_OUTPUT"
+
+      - id: action-publish-initial-dry
+        name: Dry-run initial publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check initial dry-run output
+        if: ${{ steps.action-publish-initial-dry.outputs.type != 'initial' }}
+        run: |
+          echo "::error::Expected release type to be 'initial', got '${{ steps.action-publish-initial-dry.outputs.type }}'"
+          exit 1
+
+      - id: action-publish-initial
+        name: Publish initial version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Verify initial publish
+        run: ./e2e/03-verify.sh "${{ steps.setup.outputs.package }}"
+
+      - id: action-no-publish
+        name: Publish with already published version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Check no-publish output
+        if: ${{ steps.action-no-publish.outputs.type }}
+        run: |
+          echo "::error::Expected release type to be '', got '${{ steps.action-no-publish.outputs.type }}'"
+          exit 1
+
+      - name: Bump fixture version to 0.0.2
+        shell: bash
+        run: ./e2e/01-setup-package.sh "${{ steps.setup.outputs.package }}" 0.0.2
+
+      - id: action-publish-patch-dry
+        name: Dry-run patch publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check patch dry-run output
+        if: ${{ steps.action-publish-patch-dry.outputs.type != 'patch' }}
+        run: |
+          echo "::error::Expected release type to be 'patch', got '${{ steps.action-publish-patch-dry.outputs.type }}'"
+          exit 1
+
+      - id: action-publish-patch
+        name: Publish patch version
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+
+      - name: Verify patch publish
+        run: ./e2e/03-verify.sh "${{ steps.setup.outputs.package }}"
+
+      - id: action-publish-dry-after
+        name: Dry-run after patch publish
+        uses: ./
+        with:
+          registry: http://localhost:4873
+          package: ${{ steps.setup.outputs.package }}/package.json
+          token: ${{ steps.setup.outputs.token }}
+          dry-run: true
+
+      - name: Check post-publish dry-run output
+        if: ${{ steps.action-publish-dry-after.outputs.type }}
+        run: |
+          echo "::error::Expected release type to be '', got '${{ steps.action-publish-dry-after.outputs.type }}'"
+          exit 1
+
