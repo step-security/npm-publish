@@ -32,7 +32,7 @@ export async function useNpmEnvironment<TReturn>(
   const { host, origin, pathname } = registry;
   const pathnameWithSlash = pathname.endsWith("/") ? pathname : `${pathname}/`;
   const config = [
-    "; created by jsdevtools/npm-publish",
+    "; created by step-security/npm-publish",
     `//${host}${pathnameWithSlash}:_authToken=\${NODE_AUTH_TOKEN}`,
     `registry=${origin}${pathnameWithSlash}`,
     "",

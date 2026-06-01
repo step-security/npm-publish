@@ -1,5 +1,5 @@
 {
-  "name": "@jsdevtools/npm-publish",
+  "name": "@step-security/npm-publish",
   "description": "Fast, easy publishing to NPM",
   "version": "4.1.5",
   "keywords": [
@@ -33,17 +33,13 @@
     "lint": "eslint . && prettier . --check",
     "format": "eslint . --fix && prettier . --write",
     "build": "concurrently -g 'npm:build:*'",
-    "build:dist": "rolldown src/action/main.ts --dir=dist --platform=node --treeshake --sourcemap",
+    "build:dist": "rolldown src/action/entry.ts --dir=dist --platform=node --treeshake --sourcemap",
     "build:lib": "tsc",
     "test": "vitest",
     "coverage": "vitest run --coverage"
   },
   "engines": {
-    "node": ">=20"
-  },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "node": ">=24"
   },
   "devDependencies": {
     "@mcous/eslint-config": "^0.9.0",

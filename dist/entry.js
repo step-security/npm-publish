@@ -30980,7 +30980,7 @@ async function useNpmEnvironment(manifest, options, task) {
 	const { host, origin, pathname } = registry;
 	const pathnameWithSlash = pathname.endsWith("/") ? pathname : `${pathname}/`;
 	const config = [
-		"; created by jsdevtools/npm-publish",
+		"; created by step-security/npm-publish",
 		`//${host}${pathnameWithSlash}:_authToken=\${NODE_AUTH_TOKEN}`,
 		`registry=${origin}${pathnameWithSlash}`,
 		""
@@ -34294,6 +34294,10 @@ async function main() {
 	}
 }
 //#endregion
-export { main };
+//#region src/action/entry.ts
+/** Bundled action entry point — invokes main() so action.yaml can point at dist/ directly. */
+await main();
+//#endregion
+export {};
 
-//# sourceMappingURL=main.js.map
+//# sourceMappingURL=entry.js.map

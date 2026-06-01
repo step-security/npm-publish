@@ -3,7 +3,7 @@
 # Fast, easy publishing to NPM
 
 [![Build Status](https://github.com/step-security/npm-publish/workflows/CI-CD/badge.svg)](https://github.com/step-security/npm-publish/actions)
-[![License](https://img.shields.io/npm/l/@jsdevtools/npm-publish.svg)](LICENSE)
+[![License](https://img.shields.io/github/license/step-security/npm-publish)](LICENSE)
 
 Publish packages to npm automatically in GitHub Actions whenever a change to your package's `version` field is detected.
 
@@ -121,7 +121,6 @@ jobs:
 [workflow file]: https://help.github.com/en/actions/automating-your-workflow-with-github-actions
 [npm authentication token]: https://docs.npmjs.com/creating-and-viewing-authentication-tokens
 [GitHub Package Registry]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry
-[good security practices]: https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions
 
 ### Action usage
 
@@ -174,99 +173,6 @@ npm-publish exposes several output variables, which you can use in later steps o
 
 [semver release type]: https://github.com/npm/node-semver#release_types
 
-#### option changes
-
-The `check-version` and `greater-version-only` boolean options were replaced with the `strategy` option:
-
-- `strategy: all` (default) will publish any version that does not yet exist in the registry
-- `strategy: upgrade` will publish only if the version is a semver upgrade of the requested `dist-tag`
-
-```diff
-  with:
-    token: ${{ secrets.NPM_TOKEN }}
--   check-version: true
--   greater-version-only: false
-+   strategy: all
-
-  with:
-    token: ${{ secrets.NPM_TOKEN }}
--   check-version: true
--   greater-version-only: true
-+   strategy: upgrade
-```
-
-`check-version: false` has been removed. If you only need to publish, without first checking whether the version exists in the registry, you can [use `npm` directly][publishing-nodejs-packages] instead:
-
-```diff
-  - uses: actions/setup-node@v6
-    with:
-      node-version: '24'
-+     registry-url: https://registry.npmjs.org/
-
-- - uses: step-security/npm-publish@v1
--   with:
--     token: ${{ secrets.NPM_TOKEN }}
--     check-version: false
-+ - run: npm publish
-+   env:
-+     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-```
-
-[publishing-nodejs-packages]: https://docs.github.com/actions/publishing-packages/publishing-nodejs-packages
-
-#### output changes
-
-The `type` output is now an empty string instead of `'none'` when no release occurs
-
-```diff
-  - run: echo "Version changed!"
--   if: ${{ steps.publish.outputs.type != 'none' }}
-+   if: ${{ steps.publish.outputs.type }}
-```
-
-#### behavior changes
-
-The `--ignore-scripts` option is now passed to `npm publish` as a security precaution. If you define any publish lifecycle scripts - `prepublishOnly`, `prepack`, `prepare`, `postpack`, `publish`, `postpublish` - we recommend you run that logic as a separate explicit build step.
-
-```diff
-+ - run: npm run build
-
-- - uses: step-security/npm-publish@v1
-+ - uses: step-security/npm-publish@v4
-    with:
-      token: ${{ secrets.NPM_TOKEN }}
-```
-
-If you can't change your build, you can set the `ignore-scripts` input to `false` as a workaround. Be aware that failures during a lifecycle script can be difficult to debug, and any `stdout`/`stderr` output from your build script could interfere with how `npm-publish` interprets results from the `npm` CLI.
-
-```diff
-- - uses: step-security/npm-publish@v1
-+ - uses: step-security/npm-publish@v4
-    with:
-      token: ${{ secrets.NPM_TOKEN }}
-+     ignore-scripts: false
-```
-
-The global `.npmrc` file is no longer read nor modified. You may have workarounds in place referencing `INPUT_TOKEN`, which v1 [erroneously wrote][#15] to `.npmrc`. These workarounds should be removed.
-
-```diff
-  - uses: actions/setup-node@v6
-    with:
-      node-version: '24'
-      registry-url: https://registry.npmjs.org/
-
-- - uses: step-security/npm-publish@v1
-+ - uses: step-security/npm-publish@v4
-    with:
-      token: ${{ secrets.NPM_TOKEN }}
-
-  - name: Do some more stuff with npm
-    run: npm whoami
-    env:
--     INPUT_TOKEN: ${{ secrets.NPM_TOKEN }}
-+     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-```
-
 ## License
 
-npm-publish is 100% free and open-source, under the [MIT license](LICENSE). Use it however you want.
+npm-publish is under the [MIT license](LICENSE).

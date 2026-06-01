@@ -73,7 +73,7 @@ describe("readManifest", () => {
 
     expect(result).toMatchObject({
       packageSpec: "",
-      name: "@jsdevtools/npm-publish",
+      name: "@step-security/npm-publish",
     });
   });
 
