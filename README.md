@@ -121,6 +121,7 @@ jobs:
 [workflow file]: https://help.github.com/en/actions/automating-your-workflow-with-github-actions
 [npm authentication token]: https://docs.npmjs.com/creating-and-viewing-authentication-tokens
 [GitHub Package Registry]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry
+[good security practices]: https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions
 
 ### Action usage
 
