@@ -54,7 +54,7 @@
     "eslint-plugin-jsdoc": "^62.8.1",
     "globals": "^17.4.0",
     "prettier": "^3.7.4",
-    "prettier-plugin-jsdoc": "^1.8.0",
+    "prettier-plugin-jsdoc": "^1.8.1",
     "rolldown": "1.0.0-rc.12",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2",
