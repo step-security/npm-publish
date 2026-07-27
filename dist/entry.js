@@ -16362,6 +16362,42 @@ function bind(fn, thisArg) {
 const { toString } = Object.prototype;
 const { getPrototypeOf } = Object;
 const { iterator, toStringTag } = Symbol;
+const hasOwnProperty = (({ hasOwnProperty }) => (obj, prop) => hasOwnProperty.call(obj, prop))(Object.prototype);
+/**
+* Walk the prototype chain (excluding the shared Object.prototype) looking for
+* an own `prop`. This distinguishes genuine own/inherited members — including
+* class accessors and template prototypes — from members injected via
+* Object.prototype pollution (e.g. `Object.prototype.username = '...'`), which
+* live on Object.prototype itself and are therefore never matched.
+*
+* @param {*} thing The value whose chain to inspect
+* @param {string|symbol} prop The property key to look for
+*
+* @returns {boolean} True when `prop` is owned below Object.prototype
+*/
+const hasOwnInPrototypeChain = (thing, prop) => {
+	let obj = thing;
+	const seen = [];
+	while (obj != null && obj !== Object.prototype) {
+		if (seen.indexOf(obj) !== -1) return false;
+		seen.push(obj);
+		if (hasOwnProperty(obj, prop)) return true;
+		obj = getPrototypeOf(obj);
+	}
+	return false;
+};
+/**
+* Read `obj[prop]` only when it is safe from Object.prototype pollution. Own
+* properties and members inherited from a non-Object.prototype source (a class
+* instance or template object) are honored; a value reachable only through a
+* polluted Object.prototype is ignored and `undefined` is returned.
+*
+* @param {*} obj The source object
+* @param {string|symbol} prop The property key to read
+*
+* @returns {*} The resolved value, or undefined when unsafe/absent
+*/
+const getSafeProp = (obj, prop) => obj != null && hasOwnInPrototypeChain(obj, prop) ? obj[prop] : void 0;
 const kindOf = ((cache) => (thing) => {
 	const str = toString.call(thing);
 	return cache[str] || (cache[str] = str.slice(8, -1).toLowerCase());
@@ -16464,9 +16500,9 @@ const isBoolean = (thing) => thing === true || thing === false;
 * @returns {boolean} True if value is a plain Object, otherwise false
 */
 const isPlainObject = (val) => {
-	if (kindOf(val) !== "object") return false;
+	if (!isObject(val)) return false;
 	const prototype = getPrototypeOf(val);
-	return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(toStringTag in val) && !(iterator in val);
+	return (prototype === null || prototype === Object.prototype || getPrototypeOf(prototype) === null) && !hasOwnInPrototypeChain(val, toStringTag) && !hasOwnInPrototypeChain(val, iterator);
 };
 /**
 * Determine if a value is an empty object (safely handles Buffers)
@@ -16676,14 +16712,24 @@ function merge$1(...objs) {
 	const result = {};
 	const assignValue = (val, key) => {
 		if (key === "__proto__" || key === "constructor" || key === "prototype") return;
-		const targetKey = caseless && findKey(result, key) || key;
+		const targetKey = caseless && typeof key === "string" && findKey(result, key) || key;
 		const existing = hasOwnProperty(result, targetKey) ? result[targetKey] : void 0;
 		if (isPlainObject(existing) && isPlainObject(val)) result[targetKey] = merge$1(existing, val);
 		else if (isPlainObject(val)) result[targetKey] = merge$1({}, val);
 		else if (isArray(val)) result[targetKey] = val.slice();
 		else if (!skipUndefined || !isUndefined(val)) result[targetKey] = val;
 	};
-	for (let i = 0, l = objs.length; i < l; i++) objs[i] && forEach(objs[i], assignValue);
+	for (let i = 0, l = objs.length; i < l; i++) {
+		const source = objs[i];
+		if (!source || isBuffer(source)) continue;
+		forEach(source, assignValue);
+		if (typeof source !== "object" || isArray(source)) continue;
+		const symbols = Object.getOwnPropertySymbols(source);
+		for (let j = 0; j < symbols.length; j++) {
+			const symbol = symbols[j];
+			if (propertyIsEnumerable.call(source, symbol)) assignValue(source[symbol], symbol);
+		}
+	}
 	return result;
 }
 /**
@@ -16862,7 +16908,7 @@ const toCamelCase = (str) => {
 		return p1.toUpperCase() + p2;
 	});
 };
-const hasOwnProperty = (({ hasOwnProperty }) => (obj, prop) => hasOwnProperty.call(obj, prop))(Object.prototype);
+const { propertyIsEnumerable } = Object.prototype;
 /**
 * Determine if a value is a RegExp object
 *
@@ -17004,6 +17050,18 @@ const _setImmediate = ((setImmediateSupported, postMessageSupported) => {
 */
 const asap = typeof queueMicrotask !== "undefined" ? queueMicrotask.bind(_global) : typeof process !== "undefined" && process.nextTick || _setImmediate;
 const isIterable = (thing) => thing != null && isFunction$1(thing[iterator]);
+/**
+* Determine if a value is iterable via an iterator that is NOT sourced solely
+* from a polluted Object.prototype. Use this instead of `isIterable` whenever
+* the iterable comes from untrusted input (e.g. user-supplied header sources),
+* so `Object.prototype[Symbol.iterator] = ...` cannot turn an ordinary object
+* into an attacker-controlled entries iterator.
+*
+* @param {*} thing The value to test
+*
+* @returns {boolean} True if value has a non-polluted iterator
+*/
+const isSafeIterable = (thing) => thing != null && hasOwnInPrototypeChain(thing, iterator) && isIterable(thing);
 var utils_default = {
 	isArray,
 	isArrayBuffer,
@@ -17048,6 +17106,8 @@ var utils_default = {
 	isHTMLForm,
 	hasOwnProperty,
 	hasOwnProp: hasOwnProperty,
+	hasOwnInPrototypeChain,
+	getSafeProp,
 	reduceDescriptors,
 	freezeMethods,
 	toObjectSet,
@@ -17063,7 +17123,8 @@ var utils_default = {
 	isThenable,
 	setImmediate: _setImmediate,
 	asap,
-	isIterable
+	isIterable,
+	isSafeIterable
 };
 //#endregion
 //#region node_modules/axios/lib/helpers/parseHeaders.js
@@ -17202,18 +17263,22 @@ var AxiosHeaders$1 = class {
 		const self = this;
 		function setHeader(_value, _header, _rewrite) {
 			const lHeader = normalizeHeader(_header);
-			if (!lHeader) throw new Error("header name must be a non-empty string");
+			if (!lHeader) return;
 			const key = utils_default.findKey(self, lHeader);
 			if (!key || self[key] === void 0 || _rewrite === true || _rewrite === void 0 && self[key] !== false) self[key || _header] = normalizeValue(_value);
 		}
 		const setHeaders = (headers, _rewrite) => utils_default.forEach(headers, (_value, _header) => setHeader(_value, _header, _rewrite));
 		if (utils_default.isPlainObject(header) || header instanceof this.constructor) setHeaders(header, valueOrRewrite);
 		else if (utils_default.isString(header) && (header = header.trim()) && !isValidHeaderName(header)) setHeaders(parseHeaders_default(header), valueOrRewrite);
-		else if (utils_default.isObject(header) && utils_default.isIterable(header)) {
-			let obj = {}, dest, key;
+		else if (utils_default.isObject(header) && utils_default.isSafeIterable(header)) {
+			let obj = Object.create(null), dest, key;
 			for (const entry of header) {
-				if (!utils_default.isArray(entry)) throw TypeError("Object iterator must return a key-value pair");
-				obj[key = entry[0]] = (dest = obj[key]) ? utils_default.isArray(dest) ? [...dest, entry[1]] : [dest, entry[1]] : entry[1];
+				if (!utils_default.isArray(entry)) throw new TypeError("Object iterator must return a key-value pair");
+				key = entry[0];
+				if (utils_default.hasOwnProp(obj, key)) {
+					dest = obj[key];
+					obj[key] = utils_default.isArray(dest) ? [...dest, entry[1]] : [dest, entry[1]];
+				} else obj[key] = entry[1];
 			}
 			setHeaders(obj, valueOrRewrite);
 		} else header != null && setHeader(valueOrRewrite, header, rewrite);
@@ -17397,7 +17462,13 @@ function redactConfig(config, redactKeys) {
 var AxiosError$1 = class AxiosError$1 extends Error {
 	static from(error, code, config, request, response, customProps) {
 		const axiosError = new AxiosError$1(error.message, code || error.code, config, request, response);
-		axiosError.cause = error;
+		Object.defineProperty(axiosError, "cause", {
+			__proto__: null,
+			value: error,
+			writable: true,
+			enumerable: false,
+			configurable: true
+		});
 		axiosError.name = error.name;
 		if (error.status != null && axiosError.status == null) axiosError.status = error.status;
 		customProps && Object.assign(axiosError, customProps);
@@ -26066,8 +26137,6 @@ var FormData_default = (/* @__PURE__ */ __toESM((/* @__PURE__ */ __commonJSMin((
 	setToStringTag(FormData.prototype, "FormData");
 	module.exports = FormData;
 })))(), 1)).default;
-//#endregion
-//#region node_modules/axios/lib/helpers/toFormData.js
 /**
 * Determines if the given thing is a array or js object.
 *
@@ -26156,14 +26225,33 @@ function toFormData$1(obj, formData, options) {
 	const _Blob = options.Blob || typeof Blob !== "undefined" && Blob;
 	const maxDepth = options.maxDepth === void 0 ? 100 : options.maxDepth;
 	const useBlob = _Blob && utils_default.isSpecCompliantForm(formData);
+	const stack = [];
 	if (!utils_default.isFunction(visitor)) throw new TypeError("visitor must be a function");
 	function convertValue(value) {
 		if (value === null) return "";
 		if (utils_default.isDate(value)) return value.toISOString();
 		if (utils_default.isBoolean(value)) return value.toString();
 		if (!useBlob && utils_default.isBlob(value)) throw new AxiosError$1("Blob is not supported. Use a Buffer instead.");
-		if (utils_default.isArrayBuffer(value) || utils_default.isTypedArray(value)) return useBlob && typeof Blob === "function" ? new Blob([value]) : Buffer.from(value);
+		if (utils_default.isArrayBuffer(value) || utils_default.isTypedArray(value)) {
+			if (useBlob && typeof _Blob === "function") return new _Blob([value]);
+			if (typeof Buffer !== "undefined") return Buffer.from(value);
+			throw new AxiosError$1("Blob is not supported. Use a Buffer instead.", AxiosError$1.ERR_NOT_SUPPORT);
+		}
 		return value;
+	}
+	function throwIfMaxDepthExceeded(depth) {
+		if (depth > maxDepth) throw new AxiosError$1("Object is too deeply nested (" + depth + " levels). Max depth: " + maxDepth, AxiosError$1.ERR_FORM_DATA_DEPTH_EXCEEDED);
+	}
+	function stringifyWithDepthLimit(value, depth) {
+		if (maxDepth === Infinity) return JSON.stringify(value);
+		const ancestors = [];
+		return JSON.stringify(value, function limitDepth(_key, currentValue) {
+			if (!utils_default.isObject(currentValue)) return currentValue;
+			while (ancestors.length && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+			ancestors.push(currentValue);
+			throwIfMaxDepthExceeded(depth + ancestors.length - 1);
+			return currentValue;
+		});
 	}
 	/**
 	* Default visitor.
@@ -26184,7 +26272,7 @@ function toFormData$1(obj, formData, options) {
 		if (value && !path && typeof value === "object") {
 			if (utils_default.endsWith(key, "{}")) {
 				key = metaTokens ? key : key.slice(0, -2);
-				value = JSON.stringify(value);
+				value = stringifyWithDepthLimit(value, 1);
 			} else if (utils_default.isArray(value) && isFlatArray(value) || (utils_default.isFileList(value) || utils_default.endsWith(key, "[]")) && (arr = utils_default.toArray(value))) {
 				key = removeBrackets(key);
 				arr.forEach(function each(el, index) {
@@ -26197,7 +26285,6 @@ function toFormData$1(obj, formData, options) {
 		formData.append(renderKey(path, key, dots), convertValue(value));
 		return false;
 	}
-	const stack = [];
 	const exposedHelpers = Object.assign(predicates, {
 		defaultVisitor,
 		convertValue,
@@ -26205,8 +26292,8 @@ function toFormData$1(obj, formData, options) {
 	});
 	function build(value, path, depth = 0) {
 		if (utils_default.isUndefined(value)) return;
-		if (depth > maxDepth) throw new AxiosError$1("Object is too deeply nested (" + depth + " levels). Max depth: " + maxDepth, AxiosError$1.ERR_FORM_DATA_DEPTH_EXCEEDED);
-		if (stack.indexOf(value) !== -1) throw Error("Circular reference detected in " + path.join("."));
+		throwIfMaxDepthExceeded(depth);
+		if (stack.indexOf(value) !== -1) throw new Error("Circular reference detected in " + path.join("."));
 		stack.push(value);
 		utils_default.forEach(value, function each(el, key) {
 			if ((!(utils_default.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default.isString(key) ? key.trim() : key, path, exposedHelpers)) === true) build(el, path ? path.concat(key) : [key], depth + 1);
@@ -26257,9 +26344,7 @@ prototype.append = function append(name, value) {
 	this._pairs.push([name, value]);
 };
 prototype.toString = function toString(encoder) {
-	const _encode = encoder ? function(value) {
-		return encoder.call(this, value, encode$2);
-	} : encode$2;
+	const _encode = encoder ? (value) => encoder.call(this, value, encode$2) : encode$2;
 	return this._pairs.map(function each(pair) {
 		return _encode(pair[0]) + "=" + _encode(pair[1]);
 	}, "").join("&");
@@ -26288,9 +26373,10 @@ function encode$1(val) {
 */
 function buildURL(url, params, options) {
 	if (!params) return url;
-	const _encode = options && options.encode || encode$1;
+	url = url || "";
 	const _options = utils_default.isFunction(options) ? { serialize: options } : options;
-	const serializeFn = _options && _options.serialize;
+	const _encode = utils_default.getSafeProp(_options, "encode") || encode$1;
+	const serializeFn = utils_default.getSafeProp(_options, "serialize");
 	let serializedParams;
 	if (serializeFn) serializedParams = serializeFn(params, _options);
 	else serializedParams = utils_default.isURLSearchParams(params) ? params.toString() : new AxiosURLSearchParams(params, _options).toString(_encode);
@@ -26365,7 +26451,9 @@ var transitional_default = {
 	silentJSONParsing: true,
 	forcedJSONParsing: true,
 	clarifyTimeoutError: false,
-	legacyInterceptorReqResOrdering: true
+	legacyInterceptorReqResOrdering: true,
+	advertiseZstdAcceptEncoding: false,
+	validateStatusUndefinedResolves: true
 };
 //#endregion
 //#region node_modules/axios/lib/platform/node/classes/URLSearchParams.js
@@ -26469,6 +26557,10 @@ function toURLEncodedForm(data, options) {
 }
 //#endregion
 //#region node_modules/axios/lib/helpers/formDataToJSON.js
+const MAX_DEPTH = 100;
+function throwIfDepthExceeded(index) {
+	if (index > MAX_DEPTH) throw new AxiosError$1("FormData field is too deeply nested (" + index + " levels). Max depth: 100", AxiosError$1.ERR_FORM_DATA_DEPTH_EXCEEDED);
+}
 /**
 * It takes a string like `foo[x][y][z]` and returns an array like `['foo', 'x', 'y', 'z']
 *
@@ -26477,9 +26569,14 @@ function toURLEncodedForm(data, options) {
 * @returns An array of strings.
 */
 function parsePropPath(name) {
-	return utils_default.matchAll(/\w+|\[(\w*)]/g, name).map((match) => {
-		return match[0] === "[]" ? "" : match[1] || match[0];
-	});
+	const path = [];
+	const pattern = /\w+|\[(\w*)]/g;
+	let match;
+	while ((match = pattern.exec(name)) !== null) {
+		throwIfDepthExceeded(path.length);
+		path.push(match[0] === "[]" ? "" : match[1] || match[0]);
+	}
+	return path;
 }
 /**
 * Convert an array to an object.
@@ -26509,6 +26606,7 @@ function arrayToObject(arr) {
 */
 function formDataToJSON(formData) {
 	function buildPath(path, value, target, index) {
+		throwIfDepthExceeded(index);
 		let name = path[index++];
 		if (name === "__proto__") return true;
 		const isNumericKey = Number.isFinite(+name);
@@ -26724,6 +26822,19 @@ function combineURLs(baseURL, relativeURL) {
 }
 //#endregion
 //#region node_modules/axios/lib/core/buildFullPath.js
+const malformedHttpProtocol = /^https?:(?!\/\/)/i;
+const httpProtocolControlCharacters = /[\t\n\r]/g;
+function stripLeadingC0ControlOrSpace(url) {
+	let i = 0;
+	while (i < url.length && url.charCodeAt(i) <= 32) i++;
+	return url.slice(i);
+}
+function normalizeURLForProtocolCheck(url) {
+	return stripLeadingC0ControlOrSpace(url).replace(httpProtocolControlCharacters, "");
+}
+function assertValidHttpProtocolURL(url, config) {
+	if (typeof url === "string" && malformedHttpProtocol.test(normalizeURLForProtocolCheck(url))) throw new AxiosError$1("Invalid URL: missing \"//\" after protocol", AxiosError$1.ERR_INVALID_URL, config);
+}
 /**
 * Creates a new URL by combining the baseURL with the requestedURL,
 * only when the requestedURL is not already an absolute URL.
@@ -26734,9 +26845,13 @@ function combineURLs(baseURL, relativeURL) {
 *
 * @returns {string} The combined full path
 */
-function buildFullPath(baseURL, requestedURL, allowAbsoluteUrls) {
+function buildFullPath(baseURL, requestedURL, allowAbsoluteUrls, config) {
+	assertValidHttpProtocolURL(requestedURL, config);
 	let isRelativeUrl = !isAbsoluteURL(requestedURL);
-	if (baseURL && (isRelativeUrl || allowAbsoluteUrls === false)) return combineURLs(baseURL, requestedURL);
+	if (baseURL && (isRelativeUrl || allowAbsoluteUrls === false)) {
+		assertValidHttpProtocolURL(baseURL, config);
+		return combineURLs(baseURL, requestedURL);
+	}
 	return requestedURL;
 }
 //#endregion
@@ -28487,7 +28602,7 @@ var require_follow_redirects = /* @__PURE__ */ __commonJSMin(((exports, module) 
 //#region node_modules/axios/lib/env/data.js
 var import_dist = /* @__PURE__ */ __toESM(require_dist(), 1);
 var import_follow_redirects = /* @__PURE__ */ __toESM(require_follow_redirects(), 1);
-const VERSION$1 = "1.16.1";
+const VERSION$1 = "1.18.1";
 //#endregion
 //#region node_modules/axios/lib/helpers/parseProtocol.js
 function parseProtocol(url) {
@@ -28519,10 +28634,10 @@ function fromDataURI(uri, asBlob, options) {
 		const params = match[2];
 		const encoding = match[3] ? "base64" : "utf8";
 		const body = match[4];
-		let mime;
+		let mime = "";
 		if (type) mime = params ? type + params : type;
 		else if (params) mime = "text/plain" + params;
-		const buffer = Buffer.from(decodeURIComponent(body), encoding);
+		const buffer = encoding === "base64" ? Buffer.from(body, "base64") : Buffer.from(decodeURIComponent(body), encoding);
 		if (asBlob) {
 			if (!_Blob) throw new AxiosError$1("Blob is not supported", AxiosError$1.ERR_NOT_SUPPORT);
 			return new _Blob([buffer], { type: mime });
@@ -28674,8 +28789,8 @@ var FormDataPart = class {
 };
 const formDataToStream = (form, headersHandler, options) => {
 	const { tag = "form-data-boundary", size = 25, boundary = tag + "-" + platform_default.generateString(size, BOUNDARY_ALPHABET) } = options || {};
-	if (!utils_default.isFormData(form)) throw TypeError("FormData instance required");
-	if (boundary.length < 1 || boundary.length > 70) throw Error("boundary must be 1-70 characters long");
+	if (!utils_default.isFormData(form)) throw new TypeError("FormData instance required");
+	if (boundary.length < 1 || boundary.length > 70) throw new Error("boundary must be 1-70 characters long");
 	const boundaryBytes = textEncoder.encode("--" + boundary + CRLF);
 	const footerBytes = textEncoder.encode("--" + boundary + "--\r\n");
 	let contentLength = footerBytes.byteLength;
@@ -28718,6 +28833,66 @@ var ZlibHeaderTransformStream = class extends stream.Transform {
 	}
 };
 //#endregion
+//#region node_modules/axios/lib/helpers/Http2Sessions.js
+var Http2Sessions = class {
+	constructor() {
+		this.sessions = Object.create(null);
+	}
+	getSession(authority, options) {
+		options = Object.assign({ sessionTimeout: 1e3 }, options);
+		let authoritySessions = this.sessions[authority];
+		if (authoritySessions) {
+			let len = authoritySessions.length;
+			for (let i = 0; i < len; i++) {
+				const [sessionHandle, sessionOptions] = authoritySessions[i];
+				if (!sessionHandle.destroyed && !sessionHandle.closed && util.isDeepStrictEqual(sessionOptions, options)) return sessionHandle;
+			}
+		}
+		const session = http2.connect(authority, options);
+		let removed;
+		let timer;
+		const removeSession = () => {
+			if (removed) return;
+			removed = true;
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			let entries = authoritySessions, len = entries.length, i = len;
+			while (i--) if (entries[i][0] === session) {
+				if (len === 1) delete this.sessions[authority];
+				else entries.splice(i, 1);
+				if (!session.closed) session.close();
+				return;
+			}
+		};
+		const originalRequestFn = session.request;
+		const { sessionTimeout } = options;
+		if (sessionTimeout != null) {
+			let streamsCount = 0;
+			session.request = function() {
+				const stream = originalRequestFn.apply(this, arguments);
+				streamsCount++;
+				if (timer) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				stream.once("close", () => {
+					if (!--streamsCount) timer = setTimeout(() => {
+						timer = null;
+						removeSession();
+					}, sessionTimeout);
+				});
+				return stream;
+			};
+		}
+		session.once("close", removeSession);
+		let entry = [session, options];
+		authoritySessions ? authoritySessions.push(entry) : authoritySessions = this.sessions[authority] = [entry];
+		return session;
+	}
+};
+//#endregion
 //#region node_modules/axios/lib/helpers/callbackify.js
 const callbackify = (fn, reducer) => {
 	return utils_default.isAsyncFn(fn) ? function(...args) {
@@ -28733,12 +28908,27 @@ const callbackify = (fn, reducer) => {
 };
 //#endregion
 //#region node_modules/axios/lib/helpers/shouldBypassProxy.js
-const LOOPBACK_HOSTNAMES = new Set(["localhost"]);
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "0.0.0.0"]);
 const isIPv4Loopback = (host) => {
 	const parts = host.split(".");
 	if (parts.length !== 4) return false;
 	if (parts[0] !== "127") return false;
 	return parts.every((p) => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+};
+const isIPv6ZeroGroup = (group) => /^0{1,4}$/.test(group);
+const isIPv6Unspecified = (host) => {
+	if (host === "::") return true;
+	const compressionIndex = host.indexOf("::");
+	if (compressionIndex !== -1) {
+		if (compressionIndex !== host.lastIndexOf("::")) return false;
+		const left = host.slice(0, compressionIndex);
+		const right = host.slice(compressionIndex + 2);
+		const leftGroups = left ? left.split(":") : [];
+		const rightGroups = right ? right.split(":") : [];
+		return leftGroups.length + rightGroups.length < 8 && leftGroups.every(isIPv6ZeroGroup) && rightGroups.every(isIPv6ZeroGroup);
+	}
+	const groups = host.split(":");
+	return groups.length === 8 && groups.every(isIPv6ZeroGroup);
 };
 const isIPv6Loopback = (host) => {
 	if (host === "::1") return true;
@@ -28760,6 +28950,7 @@ const isLoopback = (host) => {
 	if (!host) return false;
 	if (LOOPBACK_HOSTNAMES.has(host)) return true;
 	if (isIPv4Loopback(host)) return true;
+	if (isIPv6Unspecified(host)) return true;
 	return isIPv6Loopback(host);
 };
 const DEFAULT_PORTS = {
@@ -28944,11 +29135,13 @@ const asyncDecorator = (fn) => (...args) => utils_default.asap(() => fn(...args)
 * Estimate decoded byte length of a data:// URL *without* allocating large buffers.
 * - For base64: compute exact decoded size using length and padding;
 *               handle %XX at the character-count level (no string allocation).
-* - For non-base64: use UTF-8 byteLength of the encoded body as a safe upper bound.
+* - For non-base64: compute the exact percent-decoded UTF-8 byte length.
 *
 * @param {string} url
 * @returns {number}
 */
+const isHexDigit = (charCode) => charCode >= 48 && charCode <= 57 || charCode >= 65 && charCode <= 70 || charCode >= 97 && charCode <= 102;
+const isPercentEncodedByte = (str, i, len) => i + 2 < len && isHexDigit(str.charCodeAt(i + 1)) && isHexDigit(str.charCodeAt(i + 2));
 function estimateDataURLDecodedBytes(url) {
 	if (!url || typeof url !== "string") return 0;
 	if (!url.startsWith("data:")) return 0;
@@ -28962,7 +29155,7 @@ function estimateDataURLDecodedBytes(url) {
 		for (let i = 0; i < len; i++) if (body.charCodeAt(i) === 37 && i + 2 < len) {
 			const a = body.charCodeAt(i + 1);
 			const b = body.charCodeAt(i + 2);
-			if ((a >= 48 && a <= 57 || a >= 65 && a <= 70 || a >= 97 && a <= 102) && (b >= 48 && b <= 57 || b >= 65 && b <= 70 || b >= 97 && b <= 102)) {
+			if (isHexDigit(a) && isHexDigit(b)) {
 				effectiveLen -= 2;
 				i += 2;
 			}
@@ -28986,11 +29179,13 @@ function estimateDataURLDecodedBytes(url) {
 		const bytes = Math.floor(effectiveLen / 4) * 3 - (pad || 0);
 		return bytes > 0 ? bytes : 0;
 	}
-	if (typeof Buffer !== "undefined" && typeof Buffer.byteLength === "function") return Buffer.byteLength(body, "utf8");
 	let bytes = 0;
 	for (let i = 0, len = body.length; i < len; i++) {
 		const c = body.charCodeAt(i);
-		if (c < 128) bytes += 1;
+		if (c === 37 && isPercentEncodedByte(body, i, len)) {
+			bytes += 1;
+			i += 2;
+		} else if (c < 128) bytes += 1;
 		else if (c < 2048) bytes += 2;
 		else if (c >= 55296 && c <= 56319 && i + 1 < len) {
 			const next = body.charCodeAt(i + 1);
@@ -29012,7 +29207,14 @@ const brotliOptions = {
 	flush: zlib.constants.BROTLI_OPERATION_FLUSH,
 	finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH
 };
+const zstdOptions = {
+	flush: zlib.constants.ZSTD_e_flush,
+	finishFlush: zlib.constants.ZSTD_e_flush
+};
 const isBrotliSupported = utils_default.isFunction(zlib.createBrotliDecompress);
+const isZstdSupported = utils_default.isFunction(zlib.createZstdDecompress);
+const ACCEPT_ENCODING = "gzip, compress, deflate" + (isBrotliSupported ? ", br" : "");
+const ACCEPT_ENCODING_WITH_ZSTD = ACCEPT_ENCODING + (isZstdSupported ? ", zstd" : "");
 const { http: httpFollow, https: httpsFollow } = import_follow_redirects.default;
 const isHttps = /https:?/;
 const FORM_DATA_CONTENT_HEADERS$1 = ["content-type", "content-length"];
@@ -29030,6 +29232,25 @@ const kAxiosCurrentReq = Symbol("axios.http.currentReq");
 const kAxiosInstalledTunnel = Symbol("axios.http.installedTunnel");
 const tunnelingAgentCache = /* @__PURE__ */ new Map();
 const tunnelingAgentCacheUser = /* @__PURE__ */ new WeakMap();
+const NODE_NATIVE_ENV_PROXY_SUPPORT = {
+	22: 21,
+	24: 5
+};
+function isNodeNativeEnvProxySupported(nodeVersion = process.versions && process.versions.node) {
+	if (!nodeVersion) return false;
+	const [major, minor] = nodeVersion.split(".").map((part) => Number(part));
+	if (!Number.isInteger(major) || !Number.isInteger(minor)) return false;
+	if (major > 24) return true;
+	return NODE_NATIVE_ENV_PROXY_SUPPORT[major] != null && minor >= NODE_NATIVE_ENV_PROXY_SUPPORT[major];
+}
+function isNodeEnvProxyEnabled(agent, nodeVersion = process.versions && process.versions.node) {
+	if (!isNodeNativeEnvProxySupported(nodeVersion)) return false;
+	const agentOptions = agent && agent.options;
+	return Boolean(agentOptions && utils_default.hasOwnProp(agentOptions, "proxyEnv") && agentOptions.proxyEnv != null);
+}
+function getProxyEnvAgent(options, configHttpAgent, configHttpsAgent) {
+	return isHttps.test(options.protocol) ? configHttpsAgent || https.globalAgent : configHttpAgent || http.globalAgent;
+}
 function getTunnelingAgent(agentOptions, userHttpsAgent) {
 	const key = agentOptions.protocol + "//" + agentOptions.hostname + ":" + (agentOptions.port || "") + "#" + (agentOptions.auth || "");
 	const cache = userHttpsAgent ? tunnelingAgentCacheUser.get(userHttpsAgent) || tunnelingAgentCacheUser.set(userHttpsAgent, /* @__PURE__ */ new Map()).get(userHttpsAgent) : tunnelingAgentCache;
@@ -29039,6 +29260,16 @@ function getTunnelingAgent(agentOptions, userHttpsAgent) {
 		...userHttpsAgent.options,
 		...agentOptions
 	} : agentOptions);
+	if (userHttpsAgent && userHttpsAgent.options) {
+		const originTLSOptions = { ...userHttpsAgent.options };
+		const callback = agent.callback;
+		agent.callback = function axiosTunnelingAgentCallback(req, opts) {
+			return callback.call(this, req, {
+				...originTLSOptions,
+				...opts
+			});
+		};
+	}
 	agent[kAxiosInstalledTunnel] = true;
 	cache.set(key, agent);
 	return agent;
@@ -29046,7 +29277,7 @@ function getTunnelingAgent(agentOptions, userHttpsAgent) {
 const supportedProtocols = platform_default.protocols.map((protocol) => {
 	return protocol + ":";
 });
-const decodeURIComponentSafe = (value) => {
+const decodeURIComponentSafe$1 = (value) => {
 	if (!utils_default.isString(value)) return value;
 	try {
 		return decodeURIComponent(value);
@@ -29058,64 +29289,10 @@ const flushOnFinish = (stream, [throttled, flush]) => {
 	stream.on("end", flush).on("error", flush);
 	return throttled;
 };
-var Http2Sessions = class {
-	constructor() {
-		this.sessions = Object.create(null);
-	}
-	getSession(authority, options) {
-		options = Object.assign({ sessionTimeout: 1e3 }, options);
-		let authoritySessions = this.sessions[authority];
-		if (authoritySessions) {
-			let len = authoritySessions.length;
-			for (let i = 0; i < len; i++) {
-				const [sessionHandle, sessionOptions] = authoritySessions[i];
-				if (!sessionHandle.destroyed && !sessionHandle.closed && util.isDeepStrictEqual(sessionOptions, options)) return sessionHandle;
-			}
-		}
-		const session = http2.connect(authority, options);
-		let removed;
-		const removeSession = () => {
-			if (removed) return;
-			removed = true;
-			let entries = authoritySessions, len = entries.length, i = len;
-			while (i--) if (entries[i][0] === session) {
-				if (len === 1) delete this.sessions[authority];
-				else entries.splice(i, 1);
-				if (!session.closed) session.close();
-				return;
-			}
-		};
-		const originalRequestFn = session.request;
-		const { sessionTimeout } = options;
-		if (sessionTimeout != null) {
-			let timer;
-			let streamsCount = 0;
-			session.request = function() {
-				const stream = originalRequestFn.apply(this, arguments);
-				streamsCount++;
-				if (timer) {
-					clearTimeout(timer);
-					timer = null;
-				}
-				stream.once("close", () => {
-					if (!--streamsCount) timer = setTimeout(() => {
-						timer = null;
-						removeSession();
-					}, sessionTimeout);
-				});
-				return stream;
-			};
-		}
-		session.once("close", removeSession);
-		let entry = [session, options];
-		authoritySessions ? authoritySessions.push(entry) : authoritySessions = this.sessions[authority] = [entry];
-		return session;
-	}
-};
 const http2Sessions = new Http2Sessions();
 /**
-* If the proxy or config beforeRedirects functions are defined, call them with the options
-* object.
+* If the proxy, auth, sensitive header, or config beforeRedirects functions are defined,
+* call them with the options object.
 *
 * @param {Object<string, any>} options - The options object that was passed to the request.
 *
@@ -29123,7 +29300,23 @@ const http2Sessions = new Http2Sessions();
 */
 function dispatchBeforeRedirect(options, responseDetails, requestDetails) {
 	if (options.beforeRedirects.proxy) options.beforeRedirects.proxy(options);
+	if (options.beforeRedirects.auth) options.beforeRedirects.auth(options);
+	if (options.beforeRedirects.sensitiveHeaders) options.beforeRedirects.sensitiveHeaders(options, requestDetails);
 	if (options.beforeRedirects.config) options.beforeRedirects.config(options, responseDetails, requestDetails);
+}
+function stripMatchingHeaders(headers, sensitiveSet) {
+	if (!headers) return;
+	Object.keys(headers).forEach((header) => {
+		if (sensitiveSet.has(header.toLowerCase())) delete headers[header];
+	});
+}
+function isSameOriginRedirect(redirectOptions, requestDetails) {
+	if (!requestDetails) return false;
+	try {
+		return new URL(requestDetails.url).origin === new URL(redirectOptions.href).origin;
+	} catch (e) {
+		return false;
+	}
 }
 /**
 * If the proxy or config afterRedirects functions are defined, call them with the options
@@ -29134,9 +29327,10 @@ function dispatchBeforeRedirect(options, responseDetails, requestDetails) {
 *
 * @returns {http.ClientRequestArgs}
 */
-function setProxy(options, configProxy, location, isRedirect, configHttpsAgent) {
+function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, configHttpAgent) {
 	let proxy = configProxy;
-	if (!proxy && proxy !== false) {
+	const proxyEnvAgent = getProxyEnvAgent(options, configHttpAgent, configHttpsAgent);
+	if (!proxy && proxy !== false && !isNodeEnvProxyEnabled(proxyEnvAgent)) {
 		const proxyUrl = getProxyForUrl(location);
 		if (proxyUrl) {
 			if (!shouldBypassProxy(location)) proxy = new URL(proxyUrl);
@@ -29200,7 +29394,7 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent) 
 		}
 	}
 	options.beforeRedirects.proxy = function beforeRedirect(redirectOptions) {
-		setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent);
+		setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent, configHttpAgent);
 	};
 }
 const isHttpAdapterSupported = typeof process !== "undefined" && utils_default.kindOf(process) === "process";
@@ -29262,16 +29456,25 @@ const http2Transport = { request(options, cb) {
 } };
 var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 	return wrapAsync(async function dispatchHttpRequest(resolve$1, reject, onDone) {
-		const own = (key) => utils_default.hasOwnProp(config, key) ? config[key] : void 0;
+		const own = (key) => utils_default.getSafeProp(config, key);
+		const transitional = own("transitional") || transitional_default;
 		let data = own("data");
 		let lookup = own("lookup");
 		let family = own("family");
 		let httpVersion = own("httpVersion");
 		if (httpVersion === void 0) httpVersion = 1;
 		let http2Options = own("http2Options");
+		const httpAgent = own("httpAgent");
+		const httpsAgent = own("httpsAgent");
+		const configProxy = own("proxy");
 		const responseType = own("responseType");
 		const responseEncoding = own("responseEncoding");
-		const method = config.method.toUpperCase();
+		const socketPath = own("socketPath");
+		const method = own("method").toUpperCase();
+		const maxRedirects = own("maxRedirects");
+		const maxBodyLength = own("maxBodyLength");
+		const maxContentLength = own("maxContentLength");
+		const decompress = own("decompress");
 		let isDone;
 		let rejected = false;
 		let req;
@@ -29294,9 +29497,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 		function abort(reason) {
 			try {
 				abortEmitter.emit("abort", !reason || reason.type ? new CanceledError$1(null, config, req) : reason);
-			} catch (err) {
-				console.warn("emit error", err);
-			}
+			} catch (err) {}
 		}
 		function clearConnectPhaseTimer() {
 			if (connectPhaseTimer) {
@@ -29305,9 +29506,10 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			}
 		}
 		function createTimeoutError() {
-			let timeoutErrorMessage = config.timeout ? "timeout of " + config.timeout + "ms exceeded" : "timeout exceeded";
-			const transitional = config.transitional || transitional_default;
-			if (config.timeoutErrorMessage) timeoutErrorMessage = config.timeoutErrorMessage;
+			const configTimeout = own("timeout");
+			let timeoutErrorMessage = configTimeout ? "timeout of " + configTimeout + "ms exceeded" : "timeout exceeded";
+			const configTimeoutErrorMessage = own("timeoutErrorMessage");
+			if (configTimeoutErrorMessage) timeoutErrorMessage = configTimeoutErrorMessage;
 			return new AxiosError$1(timeoutErrorMessage, transitional.clarifyTimeoutError ? AxiosError$1.ETIMEDOUT : AxiosError$1.ECONNABORTED, config, req);
 		}
 		abortEmitter.once("abort", reject);
@@ -29337,12 +29539,13 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 				});
 			} else onFinished();
 		});
-		const fullPath = buildFullPath(config.baseURL, config.url, config.allowAbsoluteUrls);
-		const parsed = new URL(fullPath, platform_default.hasBrowserEnv ? platform_default.origin : void 0);
+		const fullPath = buildFullPath(own("baseURL"), own("url"), own("allowAbsoluteUrls"), config);
+		const urlBase = socketPath ? "http://localhost" : platform_default.hasBrowserEnv ? platform_default.origin : void 0;
+		const parsed = new URL(fullPath, urlBase);
 		const protocol = parsed.protocol || supportedProtocols[0];
 		if (protocol === "data:") {
-			if (config.maxContentLength > -1) {
-				if (estimateDataURLDecodedBytes(String(config.url || fullPath || "")) > config.maxContentLength) return reject(new AxiosError$1("maxContentLength size of " + config.maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config));
+			if (maxContentLength > -1) {
+				if (estimateDataURLDecodedBytes(String(own("url") || fullPath || "")) > maxContentLength) return reject(new AxiosError$1("maxContentLength size of " + maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config));
 			}
 			let convertedData;
 			if (method !== "GET") return settle(resolve$1, reject, {
@@ -29352,7 +29555,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 				config
 			});
 			try {
-				convertedData = fromDataURI(config.url, responseType === "blob", { Blob: config.env && config.env.Blob });
+				convertedData = fromDataURI(own("url"), responseType === "blob", { Blob: config.env && config.env.Blob });
 			} catch (err) {
 				throw AxiosError$1.from(err, AxiosError$1.ERR_BAD_REQUEST, config);
 			}
@@ -29370,7 +29573,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 		}
 		if (supportedProtocols.indexOf(protocol) === -1) return reject(new AxiosError$1("Unsupported protocol " + protocol, AxiosError$1.ERR_BAD_REQUEST, config));
 		const headers = AxiosHeaders$1.from(config.headers).normalize();
-		headers.set("User-Agent", "axios/1.16.1", false);
+		headers.set("User-Agent", "axios/1.18.1", false);
 		const { onUploadProgress, onDownloadProgress } = config;
 		const maxRate = config.maxRate;
 		let maxUploadRate = void 0;
@@ -29380,7 +29583,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			data = formDataToStream(data, (formHeaders) => {
 				headers.set(formHeaders);
 			}, {
-				tag: `axios-1.16.1-boundary`,
+				tag: `axios-1.18.1-boundary`,
 				boundary: userBoundary && userBoundary[1] || void 0
 			});
 		} else if (utils_default.isFormData(data) && utils_default.isFunction(data.getHeaders) && data.getHeaders !== Object.prototype.getHeaders) {
@@ -29398,7 +29601,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			else if (utils_default.isString(data)) data = Buffer.from(data, "utf-8");
 			else return reject(new AxiosError$1("Data after transformation must be a string, an ArrayBuffer, a Buffer, or a Stream", AxiosError$1.ERR_BAD_REQUEST, config));
 			headers.setContentLength(data.length, false);
-			if (config.maxBodyLength > -1 && data.length > config.maxBodyLength) return reject(new AxiosError$1("Request body larger than maxBodyLength limit", AxiosError$1.ERR_BAD_REQUEST, config));
+			if (maxBodyLength > -1 && data.length > maxBodyLength) return reject(new AxiosError$1("Request body larger than maxBodyLength limit", AxiosError$1.ERR_BAD_REQUEST, config));
 		}
 		const contentLength = utils_default.toFiniteNumber(headers.getContentLength());
 		if (utils_default.isArray(maxRate)) {
@@ -29413,34 +29616,33 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 		let auth = void 0;
 		const configAuth = own("auth");
 		if (configAuth) {
-			const username = configAuth.username || "";
-			const password = configAuth.password || "";
+			const username = utils_default.getSafeProp(configAuth, "username") || "";
+			const password = utils_default.getSafeProp(configAuth, "password") || "";
 			auth = username + ":" + password;
 		}
-		if (!auth && parsed.username) {
-			const urlUsername = decodeURIComponentSafe(parsed.username);
-			const urlPassword = decodeURIComponentSafe(parsed.password);
+		if (!auth && (parsed.username || parsed.password)) {
+			const urlUsername = decodeURIComponentSafe$1(parsed.username);
+			const urlPassword = decodeURIComponentSafe$1(parsed.password);
 			auth = urlUsername + ":" + urlPassword;
 		}
 		auth && headers.delete("authorization");
 		let path;
 		try {
-			path = buildURL(parsed.pathname + parsed.search, config.params, config.paramsSerializer).replace(/^\?/, "");
+			path = buildURL(parsed.pathname + parsed.search, own("params"), own("paramsSerializer")).replace(/^\?/, "");
 		} catch (err) {
-			const customErr = new Error(err.message);
-			customErr.config = config;
-			customErr.url = config.url;
-			customErr.exists = true;
-			return reject(customErr);
+			return reject(AxiosError$1.from(err, AxiosError$1.ERR_BAD_REQUEST, config, null, null, {
+				url: own("url"),
+				exists: true
+			}));
 		}
-		headers.set("Accept-Encoding", "gzip, compress, deflate" + (isBrotliSupported ? ", br" : ""), false);
+		headers.set("Accept-Encoding", utils_default.hasOwnProp(transitional, "advertiseZstdAcceptEncoding") && transitional.advertiseZstdAcceptEncoding === true ? ACCEPT_ENCODING_WITH_ZSTD : ACCEPT_ENCODING, false);
 		const options = Object.assign(Object.create(null), {
 			path,
 			method,
 			headers: toByteStringHeaderObject(headers),
 			agents: {
-				http: config.httpAgent,
-				https: config.httpsAgent
+				http: httpAgent,
+				https: httpsAgent
 			},
 			auth,
 			protocol,
@@ -29450,38 +29652,66 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			http2Options
 		});
 		!utils_default.isUndefined(lookup) && (options.lookup = lookup);
-		if (config.socketPath) {
-			if (typeof config.socketPath !== "string") return reject(new AxiosError$1("socketPath must be a string", AxiosError$1.ERR_BAD_OPTION_VALUE, config));
-			if (config.allowedSocketPaths != null) {
-				const allowed = Array.isArray(config.allowedSocketPaths) ? config.allowedSocketPaths : [config.allowedSocketPaths];
-				const resolvedSocket = resolve(config.socketPath);
-				if (!allowed.some((entry) => typeof entry === "string" && resolve(entry) === resolvedSocket)) return reject(new AxiosError$1(`socketPath "${config.socketPath}" is not permitted by allowedSocketPaths`, AxiosError$1.ERR_BAD_OPTION_VALUE, config));
+		if (socketPath) {
+			if (typeof socketPath !== "string") return reject(new AxiosError$1("socketPath must be a string", AxiosError$1.ERR_BAD_OPTION_VALUE, config));
+			const allowedSocketPaths = own("allowedSocketPaths");
+			if (allowedSocketPaths != null) {
+				const allowed = Array.isArray(allowedSocketPaths) ? allowedSocketPaths : [allowedSocketPaths];
+				const resolvedSocket = resolve(socketPath);
+				if (!allowed.some((entry) => typeof entry === "string" && resolve(entry) === resolvedSocket)) return reject(new AxiosError$1(`socketPath "${socketPath}" is not permitted by allowedSocketPaths`, AxiosError$1.ERR_BAD_OPTION_VALUE, config));
 			}
-			options.socketPath = config.socketPath;
+			options.socketPath = socketPath;
 		} else {
 			options.hostname = parsed.hostname.startsWith("[") ? parsed.hostname.slice(1, -1) : parsed.hostname;
 			options.port = parsed.port;
-			setProxy(options, config.proxy, protocol + "//" + parsed.hostname + (parsed.port ? ":" + parsed.port : "") + options.path, false, config.httpsAgent);
+			setProxy(options, configProxy, protocol + "//" + parsed.hostname + (parsed.port ? ":" + parsed.port : "") + options.path, false, httpsAgent, httpAgent);
 		}
 		let transport;
 		let isNativeTransport = false;
+		let transportEnforcesMaxBodyLength = false;
 		const isHttpsRequest = isHttps.test(options.protocol);
-		if (options.agent == null) options.agent = isHttpsRequest ? config.httpsAgent : config.httpAgent;
+		if (options.agent == null) options.agent = isHttpsRequest ? httpsAgent : httpAgent;
 		if (isHttp2) transport = http2Transport;
 		else {
 			const configTransport = own("transport");
 			if (configTransport) transport = configTransport;
-			else if (config.maxRedirects === 0) {
+			else if (maxRedirects === 0) {
 				transport = isHttpsRequest ? https : http;
 				isNativeTransport = true;
 			} else {
-				if (config.maxRedirects) options.maxRedirects = config.maxRedirects;
+				transportEnforcesMaxBodyLength = true;
+				options.sensitiveHeaders = [];
+				if (maxRedirects) options.maxRedirects = maxRedirects;
 				const configBeforeRedirect = own("beforeRedirect");
 				if (configBeforeRedirect) options.beforeRedirects.config = configBeforeRedirect;
+				if (auth) {
+					const requestOrigin = parsed.origin;
+					const authToRestore = auth;
+					options.beforeRedirects.auth = function beforeRedirectAuth(redirectOptions) {
+						try {
+							if (new URL(redirectOptions.href).origin === requestOrigin) redirectOptions.auth = authToRestore;
+						} catch (e) {}
+					};
+				}
+				const sensitiveHeaders = own("sensitiveHeaders");
+				if (sensitiveHeaders != null) {
+					if (!utils_default.isArray(sensitiveHeaders)) return reject(new AxiosError$1("sensitiveHeaders must be an array of strings", AxiosError$1.ERR_BAD_OPTION_VALUE, config));
+					const sensitiveSet = /* @__PURE__ */ new Set();
+					for (const header of sensitiveHeaders) {
+						if (!utils_default.isString(header)) return reject(new AxiosError$1("sensitiveHeaders must be an array of strings", AxiosError$1.ERR_BAD_OPTION_VALUE, config));
+						sensitiveSet.add(header.toLowerCase());
+					}
+					if (sensitiveSet.size) {
+						options.sensitiveHeaders = Array.from(sensitiveSet);
+						options.beforeRedirects.sensitiveHeaders = function beforeRedirectSensitiveHeaders(redirectOptions, requestDetails) {
+							if (!isSameOriginRedirect(redirectOptions, requestDetails)) stripMatchingHeaders(redirectOptions.headers, sensitiveSet);
+						};
+					}
+				}
 				transport = isHttpsRequest ? httpsFollow : httpFollow;
 			}
 		}
-		if (config.maxBodyLength > -1) options.maxBodyLength = config.maxBodyLength;
+		if (maxBodyLength > -1) options.maxBodyLength = maxBodyLength;
 		else options.maxBodyLength = Infinity;
 		options.insecureHTTPParser = Boolean(own("insecureHTTPParser"));
 		req = transport.request(options, function handleResponse(res) {
@@ -29496,7 +29726,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			}
 			let responseStream = res;
 			const lastRequest = res.req || req;
-			if (config.decompress !== false && res.headers["content-encoding"]) {
+			if (decompress !== false && res.headers["content-encoding"]) {
 				if (method === "HEAD" || res.statusCode === 204) delete res.headers["content-encoding"];
 				switch ((res.headers["content-encoding"] || "").toLowerCase()) {
 					case "gzip":
@@ -29511,10 +29741,18 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 						streams.push(zlib.createUnzip(zlibOptions));
 						delete res.headers["content-encoding"];
 						break;
-					case "br": if (isBrotliSupported) {
-						streams.push(zlib.createBrotliDecompress(brotliOptions));
-						delete res.headers["content-encoding"];
-					}
+					case "br":
+						if (isBrotliSupported) {
+							streams.push(zlib.createBrotliDecompress(brotliOptions));
+							delete res.headers["content-encoding"];
+						}
+						break;
+					case "zstd":
+						if (isZstdSupported) {
+							streams.push(zlib.createZstdDecompress(zstdOptions));
+							delete res.headers["content-encoding"];
+						}
+						break;
 				}
 			}
 			responseStream = streams.length > 1 ? stream.pipeline(streams, utils_default.noop) : streams[0];
@@ -29526,8 +29764,8 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 				request: lastRequest
 			};
 			if (responseType === "stream") {
-				if (config.maxContentLength > -1) {
-					const limit = config.maxContentLength;
+				if (maxContentLength > -1) {
+					const limit = maxContentLength;
 					const source = responseStream;
 					async function* enforceMaxContentLength() {
 						let totalResponseBytes = 0;
@@ -29547,10 +29785,10 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 				responseStream.on("data", function handleStreamData(chunk) {
 					responseBuffer.push(chunk);
 					totalResponseBytes += chunk.length;
-					if (config.maxContentLength > -1 && totalResponseBytes > config.maxContentLength) {
+					if (maxContentLength > -1 && totalResponseBytes > maxContentLength) {
 						rejected = true;
 						responseStream.destroy();
-						abort(new AxiosError$1("maxContentLength size of " + config.maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config, lastRequest));
+						abort(new AxiosError$1("maxContentLength size of " + maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config, lastRequest));
 					}
 				});
 				responseStream.on("aborted", function handlerStreamAborted() {
@@ -29593,7 +29831,7 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 		});
 		const boundSockets = /* @__PURE__ */ new Set();
 		req.on("socket", function handleRequestSocket(socket) {
-			socket.setKeepAlive(true, 1e3 * 60);
+			if (typeof socket.setKeepAlive === "function") socket.setKeepAlive(true, 1e3 * 60);
 			if (!socket[kAxiosSocketListener]) {
 				socket.on("error", function handleSocketError(err) {
 					const current = socket[kAxiosCurrentReq];
@@ -29609,8 +29847,8 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 			for (const socket of boundSockets) if (socket[kAxiosCurrentReq] === req) socket[kAxiosCurrentReq] = null;
 			boundSockets.clear();
 		});
-		if (config.timeout) {
-			const timeout = parseInt(config.timeout, 10);
+		if (own("timeout")) {
+			const timeout = parseInt(own("timeout"), 10);
 			if (Number.isNaN(timeout)) {
 				abort(new AxiosError$1("error trying to parse `config.timeout` to int", AxiosError$1.ERR_BAD_OPTION_VALUE, config, req));
 				return;
@@ -29636,8 +29874,8 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 				if (!ended && !errored) abort(new CanceledError$1("Request stream has been aborted", config, req));
 			});
 			let uploadStream = data;
-			if (config.maxBodyLength > -1 && config.maxRedirects === 0) {
-				const limit = config.maxBodyLength;
+			if (maxBodyLength > -1 && !transportEnforcesMaxBodyLength) {
+				const limit = maxBodyLength;
 				let bytesSent = 0;
 				uploadStream = stream.pipeline([data, new stream.Transform({ transform(chunk, _enc, cb) {
 					bytesSent += chunk.length;
@@ -29680,7 +29918,11 @@ var cookies_default = platform_default.hasStandardBrowserEnv ? {
 		for (let i = 0; i < cookies.length; i++) {
 			const cookie = cookies[i].replace(/^\s+/, "");
 			const eq = cookie.indexOf("=");
-			if (eq !== -1 && cookie.slice(0, eq) === name) return decodeURIComponent(cookie.slice(eq + 1));
+			if (eq !== -1 && cookie.slice(0, eq) === name) try {
+				return decodeURIComponent(cookie.slice(eq + 1));
+			} catch (e) {
+				return cookie.slice(eq + 1);
+			}
 		}
 		return null;
 	},
@@ -29707,6 +29949,7 @@ const headersToObject = (thing) => thing instanceof AxiosHeaders$1 ? { ...thing 
 * @returns {Object} New object resulting from merging config2 to config1
 */
 function mergeConfig$1(config1, config2) {
+	config1 = config1 || {};
 	config2 = config2 || {};
 	const config = Object.create(null);
 	Object.defineProperty(config, "hasOwnProperty", {
@@ -29732,6 +29975,14 @@ function mergeConfig$1(config1, config2) {
 	function defaultToConfig2(a, b) {
 		if (!utils_default.isUndefined(b)) return getMergedValue(void 0, b);
 		else if (!utils_default.isUndefined(a)) return getMergedValue(void 0, a);
+	}
+	function getMergedTransitionalOption(prop) {
+		const transitional2 = utils_default.hasOwnProp(config2, "transitional") ? config2.transitional : void 0;
+		if (!utils_default.isUndefined(transitional2)) if (utils_default.isPlainObject(transitional2)) {
+			if (utils_default.hasOwnProp(transitional2, prop)) return transitional2[prop];
+		} else return;
+		const transitional1 = utils_default.hasOwnProp(config1, "transitional") ? config1.transitional : void 0;
+		if (utils_default.isPlainObject(transitional1) && utils_default.hasOwnProp(transitional1, prop)) return transitional1[prop];
 	}
 	function mergeDirectKeys(a, b, prop) {
 		if (utils_default.hasOwnProp(config2, prop)) return getMergedValue(a, b);
@@ -29778,6 +30029,8 @@ function mergeConfig$1(config1, config2) {
 		const configValue = merge(utils_default.hasOwnProp(config1, prop) ? config1[prop] : void 0, utils_default.hasOwnProp(config2, prop) ? config2[prop] : void 0, prop);
 		utils_default.isUndefined(configValue) && merge !== mergeDirectKeys || (config[prop] = configValue);
 	});
+	if (utils_default.hasOwnProp(config2, "validateStatus") && utils_default.isUndefined(config2.validateStatus) && getMergedTransitionalOption("validateStatusUndefinedResolves") === false) if (utils_default.hasOwnProp(config1, "validateStatus")) config.validateStatus = getMergedValue(void 0, config1.validateStatus);
+	else delete config.validateStatus;
 	return config;
 }
 //#endregion
@@ -29788,7 +30041,7 @@ function setFormDataHeaders(headers, formHeaders, policy) {
 		headers.set(formHeaders);
 		return;
 	}
-	Object.entries(formHeaders).forEach(([key, val]) => {
+	Object.entries(formHeaders || {}).forEach(([key, val]) => {
 		if (FORM_DATA_CONTENT_HEADERS.includes(key.toLowerCase())) headers.set(key, val);
 	});
 }
@@ -29800,8 +30053,8 @@ function setFormDataHeaders(headers, formHeaders, policy) {
 *
 * @returns {string} UTF-8 bytes as a Latin-1 string
 */
-const encodeUTF8 = (str) => encodeURIComponent(str).replace(/%([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-var resolveConfig_default = (config) => {
+const encodeUTF8$1 = (str) => encodeURIComponent(str).replace(/%([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+function resolveConfig(config) {
 	const newConfig = mergeConfig$1({}, config);
 	const own = (key) => utils_default.hasOwnProp(newConfig, key) ? newConfig[key] : void 0;
 	const data = own("data");
@@ -29814,10 +30067,18 @@ var resolveConfig_default = (config) => {
 	const allowAbsoluteUrls = own("allowAbsoluteUrls");
 	const url = own("url");
 	newConfig.headers = headers = AxiosHeaders$1.from(headers);
-	newConfig.url = buildURL(buildFullPath(baseURL, url, allowAbsoluteUrls), config.params, config.paramsSerializer);
-	if (auth) headers.set("Authorization", "Basic " + btoa((auth.username || "") + ":" + (auth.password ? encodeUTF8(auth.password) : "")));
+	newConfig.url = buildURL(buildFullPath(baseURL, url, allowAbsoluteUrls, newConfig), own("params"), own("paramsSerializer"));
+	if (auth) {
+		const username = utils_default.getSafeProp(auth, "username") || "";
+		const password = utils_default.getSafeProp(auth, "password") || "";
+		try {
+			headers.set("Authorization", "Basic " + btoa(username + ":" + (password ? encodeUTF8$1(password) : "")));
+		} catch (e) {
+			throw AxiosError$1.from(e, AxiosError$1.ERR_BAD_OPTION_VALUE, config);
+		}
+	}
 	if (utils_default.isFormData(data)) {
-		if (platform_default.hasStandardBrowserEnv || platform_default.hasStandardBrowserWebWorkerEnv) headers.setContentType(void 0);
+		if (platform_default.hasStandardBrowserEnv || platform_default.hasStandardBrowserWebWorkerEnv || utils_default.isReactNative(data)) headers.setContentType(void 0);
 		else if (utils_default.isFunction(data.getHeaders)) setFormDataHeaders(headers, data.getHeaders(), own("formDataHeaderPolicy"));
 	}
 	if (platform_default.hasStandardBrowserEnv) {
@@ -29828,10 +30089,10 @@ var resolveConfig_default = (config) => {
 		}
 	}
 	return newConfig;
-};
+}
 var xhr_default = typeof XMLHttpRequest !== "undefined" && function(config) {
 	return new Promise(function dispatchXhrRequest(resolve, reject) {
-		const _config = resolveConfig_default(config);
+		const _config = resolveConfig(config);
 		let requestData = _config.data;
 		const requestHeaders = AxiosHeaders$1.from(_config.headers).normalize();
 		let { responseType, onUploadProgress, onDownloadProgress } = _config;
@@ -29922,6 +30183,7 @@ var xhr_default = typeof XMLHttpRequest !== "undefined" && function(config) {
 		const protocol = parseProtocol(_config.url);
 		if (protocol && !platform_default.protocols.includes(protocol)) {
 			reject(new AxiosError$1("Unsupported protocol " + protocol + ":", AxiosError$1.ERR_BAD_REQUEST, config));
+			done();
 			return;
 		}
 		request.send(requestData || null);
@@ -29955,7 +30217,7 @@ const composeSignals = (signals, timeout) => {
 		});
 		signals = null;
 	};
-	signals.forEach((signal) => signal.addEventListener("abort", onabort));
+	signals.forEach((signal) => signal.addEventListener("abort", onabort, { once: true }));
 	const { signal } = controller;
 	signal.unsubscribe = () => utils_default.asap(unsubscribe);
 	return signal;
@@ -30032,12 +30294,35 @@ const trackStream = (stream, chunkSize, onProgress, onFinish) => {
 //#region node_modules/axios/lib/adapters/fetch.js
 const DEFAULT_CHUNK_SIZE = 64 * 1024;
 const { isFunction } = utils_default;
+/**
+* Encode a UTF-8 string to a Latin-1 byte string for use with btoa().
+* This is a modern replacement for the deprecated unescape(encodeURIComponent(str)) pattern.
+*
+* @param {string} str The string to encode
+*
+* @returns {string} UTF-8 bytes as a Latin-1 string
+*/
+const encodeUTF8 = (str) => encodeURIComponent(str).replace(/%([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+const decodeURIComponentSafe = (value) => {
+	if (!utils_default.isString(value)) return value;
+	try {
+		return decodeURIComponent(value);
+	} catch (error) {
+		return value;
+	}
+};
 const test = (fn, ...args) => {
 	try {
 		return !!fn(...args);
 	} catch (e) {
 		return false;
 	}
+};
+const maybeWithAuthCredentials = (url) => {
+	const protocolIndex = url.indexOf("://");
+	let urlToCheck = url;
+	if (protocolIndex !== -1) urlToCheck = urlToCheck.slice(protocolIndex + 3);
+	return urlToCheck.includes("@") || urlToCheck.includes(":");
 };
 const factory = (env) => {
 	const globalObject = utils_default.global !== void 0 && utils_default.global !== null ? utils_default.global : globalThis;
@@ -30098,9 +30383,10 @@ const factory = (env) => {
 		return length == null ? getBodyLength(body) : length;
 	};
 	return async (config) => {
-		let { url, method, data, signal, cancelToken, timeout, onDownloadProgress, onUploadProgress, responseType, headers, withCredentials = "same-origin", fetchOptions, maxContentLength, maxBodyLength } = resolveConfig_default(config);
+		let { url, method, data, signal, cancelToken, timeout, onDownloadProgress, onUploadProgress, responseType, headers, withCredentials = "same-origin", fetchOptions, maxContentLength, maxBodyLength } = resolveConfig(config);
 		const hasMaxContentLength = utils_default.isNumber(maxContentLength) && maxContentLength > -1;
 		const hasMaxBodyLength = utils_default.isNumber(maxBodyLength) && maxBodyLength > -1;
+		const own = (key) => utils_default.hasOwnProp(config, key) ? config[key] : void 0;
 		let _fetch = envFetch || fetch;
 		responseType = responseType ? (responseType + "").toLowerCase() : "text";
 		let composedSignal = composeSignals([signal, cancelToken && cancelToken.toAbortSignal()], timeout);
@@ -30109,27 +30395,63 @@ const factory = (env) => {
 			composedSignal.unsubscribe();
 		});
 		let requestContentLength;
+		let pendingBodyError = null;
+		const maxBodyLengthError = () => new AxiosError$1("Request body larger than maxBodyLength limit", AxiosError$1.ERR_BAD_REQUEST, config, request);
 		try {
+			let auth = void 0;
+			const configAuth = own("auth");
+			if (configAuth) auth = {
+				username: utils_default.getSafeProp(configAuth, "username") || "",
+				password: utils_default.getSafeProp(configAuth, "password") || ""
+			};
+			if (maybeWithAuthCredentials(url)) {
+				const parsedURL = new URL(url, platform_default.origin);
+				if (!auth && (parsedURL.username || parsedURL.password)) auth = {
+					username: decodeURIComponentSafe(parsedURL.username),
+					password: decodeURIComponentSafe(parsedURL.password)
+				};
+				if (parsedURL.username || parsedURL.password) {
+					parsedURL.username = "";
+					parsedURL.password = "";
+					url = parsedURL.href;
+				}
+			}
+			if (auth) {
+				headers.delete("authorization");
+				headers.set("Authorization", "Basic " + btoa(encodeUTF8((auth.username || "") + ":" + (auth.password || ""))));
+			}
 			if (hasMaxContentLength && typeof url === "string" && url.startsWith("data:")) {
 				if (estimateDataURLDecodedBytes(url) > maxContentLength) throw new AxiosError$1("maxContentLength size of " + maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config, request);
 			}
 			if (hasMaxBodyLength && method !== "get" && method !== "head") {
-				const outboundLength = await resolveBodyLength(headers, data);
-				if (typeof outboundLength === "number" && isFinite(outboundLength) && outboundLength > maxBodyLength) throw new AxiosError$1("Request body larger than maxBodyLength limit", AxiosError$1.ERR_BAD_REQUEST, config, request);
-			}
-			if (onUploadProgress && supportsRequestStream && method !== "get" && method !== "head" && (requestContentLength = await resolveBodyLength(headers, data)) !== 0) {
-				let _request = new Request(url, {
-					method: "POST",
-					body: data,
-					duplex: "half"
-				});
-				let contentTypeHeader;
-				if (utils_default.isFormData(data) && (contentTypeHeader = _request.headers.get("content-type"))) headers.setContentType(contentTypeHeader);
-				if (_request.body) {
-					const [onProgress, flush] = progressEventDecorator(requestContentLength, progressEventReducer(asyncDecorator(onUploadProgress)));
-					data = trackStream(_request.body, DEFAULT_CHUNK_SIZE, onProgress, flush);
+				const outboundLength = await getBodyLength(data);
+				if (typeof outboundLength === "number" && isFinite(outboundLength)) {
+					requestContentLength = outboundLength;
+					if (outboundLength > maxBodyLength) throw maxBodyLengthError();
 				}
 			}
+			const mustEnforceStreamBody = hasMaxBodyLength && (utils_default.isReadableStream(data) || utils_default.isStream(data));
+			const trackRequestStream = (stream, onProgress, flush) => trackStream(stream, DEFAULT_CHUNK_SIZE, (loadedBytes) => {
+				if (hasMaxBodyLength && loadedBytes > maxBodyLength) throw pendingBodyError = maxBodyLengthError();
+				onProgress && onProgress(loadedBytes);
+			}, flush);
+			if (supportsRequestStream && method !== "get" && method !== "head" && (onUploadProgress || mustEnforceStreamBody)) {
+				requestContentLength = requestContentLength == null ? await resolveBodyLength(headers, data) : requestContentLength;
+				if (requestContentLength !== 0 || mustEnforceStreamBody) {
+					let _request = new Request(url, {
+						method: "POST",
+						body: data,
+						duplex: "half"
+					});
+					let contentTypeHeader;
+					if (utils_default.isFormData(data) && (contentTypeHeader = _request.headers.get("content-type"))) headers.setContentType(contentTypeHeader);
+					if (_request.body) {
+						const [onProgress, flush] = onUploadProgress && progressEventDecorator(requestContentLength, progressEventReducer(asyncDecorator(onUploadProgress))) || [];
+						data = trackRequestStream(_request.body, onProgress, flush);
+					}
+				}
+			} else if (mustEnforceStreamBody && !isRequestSupported && isReadableStreamSupported && method !== "get" && method !== "head") data = trackRequestStream(data);
+			else if (mustEnforceStreamBody && isRequestSupported && !supportsRequestStream && method !== "get" && method !== "head") throw new AxiosError$1("Stream request bodies are not supported by the current fetch implementation", AxiosError$1.ERR_NOT_SUPPORT, config, request);
 			if (!utils_default.isString(withCredentials)) withCredentials = withCredentials ? "include" : "omit";
 			const isCredentialsSupported = isRequestSupported && "credentials" in Request.prototype;
 			if (utils_default.isFormData(data)) {
@@ -30148,8 +30470,9 @@ const factory = (env) => {
 			};
 			request = isRequestSupported && new Request(url, resolvedOptions);
 			let response = await (isRequestSupported ? _fetch(request, fetchOptions) : _fetch(url, resolvedOptions));
+			const responseHeaders = AxiosHeaders$1.from(response.headers);
 			if (hasMaxContentLength) {
-				const declaredLength = utils_default.toFiniteNumber(response.headers.get("content-length"));
+				const declaredLength = utils_default.toFiniteNumber(responseHeaders.getContentLength());
 				if (declaredLength != null && declaredLength > maxContentLength) throw new AxiosError$1("maxContentLength size of " + maxContentLength + " exceeded", AxiosError$1.ERR_BAD_RESPONSE, config, request);
 			}
 			const isStreamResponse = supportsResponseStream && (responseType === "stream" || responseType === "response");
@@ -30162,7 +30485,7 @@ const factory = (env) => {
 				].forEach((prop) => {
 					options[prop] = response[prop];
 				});
-				const responseContentLength = utils_default.toFiniteNumber(response.headers.get("content-length"));
+				const responseContentLength = utils_default.toFiniteNumber(responseHeaders.getContentLength());
 				const [onProgress, flush] = onDownloadProgress && progressEventDecorator(responseContentLength, progressEventReducer(asyncDecorator(onDownloadProgress), true)) || [];
 				let bytesRead = 0;
 				const onChunkProgress = (loadedBytes) => {
@@ -30205,10 +30528,34 @@ const factory = (env) => {
 				const canceledError = composedSignal.reason;
 				canceledError.config = config;
 				request && (canceledError.request = request);
-				err !== canceledError && (canceledError.cause = err);
+				if (err !== canceledError) Object.defineProperty(canceledError, "cause", {
+					__proto__: null,
+					value: err,
+					writable: true,
+					enumerable: false,
+					configurable: true
+				});
 				throw canceledError;
 			}
-			if (err && err.name === "TypeError" && /Load failed|fetch/i.test(err.message)) throw Object.assign(new AxiosError$1("Network Error", AxiosError$1.ERR_NETWORK, config, request, err && err.response), { cause: err.cause || err });
+			if (pendingBodyError) {
+				request && !pendingBodyError.request && (pendingBodyError.request = request);
+				throw pendingBodyError;
+			}
+			if (err instanceof AxiosError$1) {
+				request && !err.request && (err.request = request);
+				throw err;
+			}
+			if (err && err.name === "TypeError" && /Load failed|fetch/i.test(err.message)) {
+				const networkError = new AxiosError$1("Network Error", AxiosError$1.ERR_NETWORK, config, request, err && err.response);
+				Object.defineProperty(networkError, "cause", {
+					__proto__: null,
+					value: err.cause || err,
+					writable: true,
+					enumerable: false,
+					configurable: true
+				});
+				throw networkError;
+			}
 			throw AxiosError$1.from(err, err && err.code, config, request, err && err.response);
 		}
 	};
@@ -30305,7 +30652,7 @@ function getAdapter$1(adapters, config) {
 	}
 	if (!adapter) {
 		const reasons = Object.entries(rejectedReasons).map(([id, state]) => `adapter ${id} ` + (state === false ? "is not supported by the environment" : "is not available in the build"));
-		throw new AxiosError$1(`There is no suitable adapter to dispatch the request ` + (length ? reasons.length > 1 ? "since :\n" + reasons.map(renderReason).join("\n") : " " + renderReason(reasons[0]) : "as no adapter specified"), "ERR_NOT_SUPPORT");
+		throw new AxiosError$1(`There is no suitable adapter to dispatch the request ` + (length ? reasons.length > 1 ? "since :\n" + reasons.map(renderReason).join("\n") : " " + renderReason(reasons[0]) : "as no adapter specified"), AxiosError$1.ERR_NOT_SUPPORT);
 	}
 	return adapter;
 }
@@ -30425,7 +30772,7 @@ validators$1.spelling = function spelling(correctSpelling) {
 * @returns {object}
 */
 function assertOptions(options, schema, allowUnknown) {
-	if (typeof options !== "object") throw new AxiosError$1("options must be an object", AxiosError$1.ERR_BAD_OPTION_VALUE);
+	if (typeof options !== "object" || options === null) throw new AxiosError$1("options must be an object", AxiosError$1.ERR_BAD_OPTION_VALUE);
 	const keys = Object.keys(options);
 	let i = keys.length;
 	while (i-- > 0) {
@@ -30506,7 +30853,9 @@ var Axios$1 = class {
 			silentJSONParsing: validators.transitional(validators.boolean),
 			forcedJSONParsing: validators.transitional(validators.boolean),
 			clarifyTimeoutError: validators.transitional(validators.boolean),
-			legacyInterceptorReqResOrdering: validators.transitional(validators.boolean)
+			legacyInterceptorReqResOrdering: validators.transitional(validators.boolean),
+			advertiseZstdAcceptEncoding: validators.transitional(validators.boolean),
+			validateStatusUndefinedResolves: validators.transitional(validators.boolean)
 		}, false);
 		if (paramsSerializer != null) if (utils_default.isFunction(paramsSerializer)) config.paramsSerializer = { serialize: paramsSerializer };
 		else validator_default.assertOptions(paramsSerializer, {
@@ -30583,7 +30932,7 @@ var Axios$1 = class {
 	}
 	getUri(config) {
 		config = mergeConfig$1(this.defaults, config);
-		return buildURL(buildFullPath(config.baseURL, config.url, config.allowAbsoluteUrls), config.params, config.paramsSerializer);
+		return buildURL(buildFullPath(config.baseURL, config.url, config.allowAbsoluteUrls, config), config.params, config.paramsSerializer);
 	}
 };
 utils_default.forEach([
@@ -30596,7 +30945,7 @@ utils_default.forEach([
 		return this.request(mergeConfig$1(config || {}, {
 			method,
 			url,
-			data: (config || {}).data
+			data: config && utils_default.hasOwnProp(config, "data") ? config.data : void 0
 		}));
 	};
 });
