@@ -21,8 +21,8 @@ import "timers";
 import stream, { Readable } from "stream";
 import url from "url";
 import http2 from "http2";
-import * as realZlib from "zlib";
-import zlib from "zlib";
+import * as realZlib$1 from "zlib";
+import realZlib from "zlib";
 import os$1 from "node:os";
 import childProcess from "node:child_process";
 import fs$2 from "node:fs/promises";
@@ -3650,7 +3650,7 @@ var require_webidl = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 //#region node_modules/undici/lib/web/fetch/util.js
 var require_util$6 = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 	const { Transform: Transform$2 } = __require("node:stream");
-	const zlib$2 = __require("node:zlib");
+	const zlib$1 = __require("node:zlib");
 	const { redirectStatusSet, referrerPolicySet: referrerPolicyTokens, badPortsSet } = require_constants$3();
 	const { getGlobalOrigin } = require_global$1();
 	const { collectASequenceOfCodePoints, collectAnHTTPQuotedString, removeChars, parseMIMEType } = require_data_url();
@@ -4298,7 +4298,7 @@ var require_util$6 = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 					callback();
 					return;
 				}
-				this._inflateStream = (chunk[0] & 15) === 8 ? zlib$2.createInflate(this.#zlibOptions) : zlib$2.createInflateRaw(this.#zlibOptions);
+				this._inflateStream = (chunk[0] & 15) === 8 ? zlib$1.createInflate(this.#zlibOptions) : zlib$1.createInflateRaw(this.#zlibOptions);
 				this._inflateStream.on("data", this.push.bind(this));
 				this._inflateStream.on("end", () => this.push(null));
 				this._inflateStream.on("error", (err) => this.destroy(err));
@@ -11121,7 +11121,7 @@ var require_fetch = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 	const { makeNetworkError, makeAppropriateNetworkError, filterResponse, makeResponse, fromInnerResponse } = require_response();
 	const { HeadersList } = require_headers();
 	const { Request, cloneRequest } = require_request();
-	const zlib$1 = __require("node:zlib");
+	const zlib = __require("node:zlib");
 	const { bytesMatch, makePolicyContainer, clonePolicyContainer, requestBadPort, TAOCheck, appendRequestOriginHeader, responseLocationURL, requestCurrentURL, setRequestReferrerPolicyOnRedirect, tryUpgradeRequestToAPotentiallyTrustworthyURL, createOpaqueTimingInfo, appendFetchMetadata, corsCheck, crossOriginResourcePolicyCheck, determineRequestsReferrer, coarsenedSharedCurrentTime, createDeferredPromise, isBlobLike, sameOrigin, isCancelled, isAborted, isErrorLike, fullyReadBody, readableStreamClose, isomorphicEncode, urlIsLocal, urlIsHttpHttpsScheme, urlHasHttpsScheme, clampAndCoarsenConnectionTimingInfo, simpleRangeHeaderValue, buildContentRange, createInflate, extractMimeType } = require_util$6();
 	const { kState, kDispatcher } = require_symbols$3();
 	const assert$6 = __require("node:assert");
@@ -11745,17 +11745,17 @@ var require_fetch = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 						}
 						for (let i = codings.length - 1; i >= 0; --i) {
 							const coding = codings[i].trim();
-							if (coding === "x-gzip" || coding === "gzip") decoders.push(zlib$1.createGunzip({
-								flush: zlib$1.constants.Z_SYNC_FLUSH,
-								finishFlush: zlib$1.constants.Z_SYNC_FLUSH
+							if (coding === "x-gzip" || coding === "gzip") decoders.push(zlib.createGunzip({
+								flush: zlib.constants.Z_SYNC_FLUSH,
+								finishFlush: zlib.constants.Z_SYNC_FLUSH
 							}));
 							else if (coding === "deflate") decoders.push(createInflate({
-								flush: zlib$1.constants.Z_SYNC_FLUSH,
-								finishFlush: zlib$1.constants.Z_SYNC_FLUSH
+								flush: zlib.constants.Z_SYNC_FLUSH,
+								finishFlush: zlib.constants.Z_SYNC_FLUSH
 							}));
-							else if (coding === "br") decoders.push(zlib$1.createBrotliDecompress({
-								flush: zlib$1.constants.BROTLI_OPERATION_FLUSH,
-								finishFlush: zlib$1.constants.BROTLI_OPERATION_FLUSH
+							else if (coding === "br") decoders.push(zlib.createBrotliDecompress({
+								flush: zlib.constants.BROTLI_OPERATION_FLUSH,
+								finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH
 							}));
 							else {
 								decoders.length = 0;
@@ -29281,19 +29281,19 @@ function estimateDataURLDecodedBytes(url) {
 //#endregion
 //#region node_modules/axios/lib/adapters/http.js
 const zlibOptions = {
-	flush: zlib.constants.Z_SYNC_FLUSH,
-	finishFlush: zlib.constants.Z_SYNC_FLUSH
+	flush: realZlib.constants.Z_SYNC_FLUSH,
+	finishFlush: realZlib.constants.Z_SYNC_FLUSH
 };
 const brotliOptions = {
-	flush: zlib.constants.BROTLI_OPERATION_FLUSH,
-	finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH
+	flush: realZlib.constants.BROTLI_OPERATION_FLUSH,
+	finishFlush: realZlib.constants.BROTLI_OPERATION_FLUSH
 };
 const zstdOptions = {
-	flush: zlib.constants.ZSTD_e_flush,
-	finishFlush: zlib.constants.ZSTD_e_flush
+	flush: realZlib.constants.ZSTD_e_flush,
+	finishFlush: realZlib.constants.ZSTD_e_flush
 };
-const isBrotliSupported = utils_default.isFunction(zlib.createBrotliDecompress);
-const isZstdSupported = utils_default.isFunction(zlib.createZstdDecompress);
+const isBrotliSupported = utils_default.isFunction(realZlib.createBrotliDecompress);
+const isZstdSupported = utils_default.isFunction(realZlib.createZstdDecompress);
 const ACCEPT_ENCODING = "gzip, compress, deflate" + (isBrotliSupported ? ", br" : "");
 const ACCEPT_ENCODING_WITH_ZSTD = ACCEPT_ENCODING + (isZstdSupported ? ", zstd" : "");
 const { http: httpFollow, https: httpsFollow } = import_follow_redirects.default;
@@ -29814,23 +29814,23 @@ var http_default = isHttpAdapterSupported && function httpAdapter(config) {
 					case "x-gzip":
 					case "compress":
 					case "x-compress":
-						streams.push(zlib.createUnzip(zlibOptions));
+						streams.push(realZlib.createUnzip(zlibOptions));
 						delete res.headers["content-encoding"];
 						break;
 					case "deflate":
 						streams.push(new ZlibHeaderTransformStream());
-						streams.push(zlib.createUnzip(zlibOptions));
+						streams.push(realZlib.createUnzip(zlibOptions));
 						delete res.headers["content-encoding"];
 						break;
 					case "br":
 						if (isBrotliSupported) {
-							streams.push(zlib.createBrotliDecompress(brotliOptions));
+							streams.push(realZlib.createBrotliDecompress(brotliOptions));
 							delete res.headers["content-encoding"];
 						}
 						break;
 					case "zstd":
 						if (isZstdSupported) {
-							streams.push(zlib.createZstdDecompress(zstdOptions));
+							streams.push(realZlib.createZstdDecompress(zstdOptions));
 							delete res.headers["content-encoding"];
 						}
 						break;
@@ -33119,7 +33119,7 @@ const makeCommand = (syncFile, asyncFile, syncNoFile, asyncNoFile, validate) => 
 //#endregion
 //#region node_modules/minizlib/dist/esm/constants.js
 /* c8 ignore start */
-const realZlibConstants = zlib.constants || { ZLIB_VERNUM: 4736 };
+const realZlibConstants = realZlib.constants || { ZLIB_VERNUM: 4736 };
 /* c8 ignore stop */
 const constants$1 = Object.freeze(Object.assign(Object.create(null), {
 	Z_NO_FLUSH: 0,
@@ -33282,9 +33282,9 @@ var ZlibBase = class extends Minipass {
 		this.#finishFlushFlag = opts.finishFlush ?? 0;
 		this.#fullFlushFlag = opts.fullFlushFlag ?? 0;
 		/* c8 ignore stop */
-		if (typeof realZlib[mode] !== "function") throw new TypeError("Compression method not supported: " + mode);
+		if (typeof realZlib$1[mode] !== "function") throw new TypeError("Compression method not supported: " + mode);
 		try {
-			this.#handle = new realZlib[mode](opts);
+			this.#handle = new realZlib$1[mode](opts);
 		} catch (er) {
 			throw new ZlibError(er, this.constructor);
 		}
