@@ -33523,6 +33523,26 @@ const twosComp = (byte) => (255 ^ byte) + 1 & 255;
 //#endregion
 //#region node_modules/tar/dist/esm/types.js
 const isCode = (c) => name.has(c);
+/**
+* types that are a normal file system entry, not metadata.
+*
+* These can be the subject of extended/globalExtended headers, long path
+* names, long linkpath names, etc.
+*
+* Any other types are meta, and cannot be targetted by extended PAX headers.
+*/
+const normalFsTypes = new Set([
+	"0",
+	"",
+	"1",
+	"2",
+	"3",
+	"4",
+	"5",
+	"6",
+	"7",
+	"D"
+]);
 const name = new Map([
 	["0", "File"],
 	["", "OldFile"],
@@ -33549,6 +33569,7 @@ const name = new Map([
 const code = new Map(Array.from(name).map((kv) => [kv[1], kv[0]]));
 //#endregion
 //#region node_modules/tar/dist/esm/header.js
+const notNegative = (n) => n === void 0 || n < 0 ? void 0 : n;
 var Header = class {
 	cksumValid = false;
 	needPax = false;
@@ -33578,26 +33599,29 @@ var Header = class {
 	decode(buf, off, ex, gex) {
 		if (!off) off = 0;
 		if (!buf || !(buf.length >= off + 512)) throw new Error("need 512 bytes for header");
-		this.path = ex?.path ?? decString(buf, off, 100);
-		this.mode = ex?.mode ?? gex?.mode ?? decNumber(buf, off + 100, 8);
-		this.uid = ex?.uid ?? gex?.uid ?? decNumber(buf, off + 108, 8);
-		this.gid = ex?.gid ?? gex?.gid ?? decNumber(buf, off + 116, 8);
-		this.size = ex?.size ?? gex?.size ?? decNumber(buf, off + 124, 12);
-		this.mtime = ex?.mtime ?? gex?.mtime ?? decDate(buf, off + 136, 12);
-		this.cksum = decNumber(buf, off + 148, 12);
-		if (gex) this.#slurp(gex, true);
-		if (ex) this.#slurp(ex);
 		const t = decString(buf, off + 156, 1);
+		const isNormalFS = normalFsTypes.has(t);
+		const exForFields = isNormalFS ? ex : void 0;
+		const gexForFields = isNormalFS ? gex : void 0;
+		this.path = exForFields?.path ?? decString(buf, off, 100);
+		this.mode = exForFields?.mode ?? gexForFields?.mode ?? decNumber(buf, off + 100, 8);
+		this.uid = exForFields?.uid ?? gexForFields?.uid ?? decNumber(buf, off + 108, 8);
+		this.gid = exForFields?.gid ?? gexForFields?.gid ?? decNumber(buf, off + 116, 8);
+		this.size = notNegative(exForFields?.size ?? gexForFields?.size ?? decNumber(buf, off + 124, 12));
+		this.mtime = exForFields?.mtime ?? gexForFields?.mtime ?? decDate(buf, off + 136, 12);
+		this.cksum = decNumber(buf, off + 148, 12);
+		if (gexForFields) this.#slurp(gexForFields, true);
+		if (exForFields) this.#slurp(exForFields);
 		if (isCode(t)) this.#type = t || "0";
 		if (this.#type === "0" && this.path.slice(-1) === "/") this.#type = "5";
 		if (this.#type === "5") this.size = 0;
 		this.linkpath = decString(buf, off + 157, 100);
 		if (buf.subarray(off + 257, off + 265).toString() === "ustar\x0000") {
 			/* c8 ignore start */
-			this.uname = ex?.uname ?? gex?.uname ?? decString(buf, off + 265, 32);
-			this.gname = ex?.gname ?? gex?.gname ?? decString(buf, off + 297, 32);
-			this.devmaj = ex?.devmaj ?? gex?.devmaj ?? decNumber(buf, off + 329, 8) ?? 0;
-			this.devmin = ex?.devmin ?? gex?.devmin ?? decNumber(buf, off + 337, 8) ?? 0;
+			this.uname = exForFields?.uname ?? gexForFields?.uname ?? decString(buf, off + 265, 32);
+			this.gname = exForFields?.gname ?? gexForFields?.gname ?? decString(buf, off + 297, 32);
+			this.devmaj = exForFields?.devmaj ?? gexForFields?.devmaj ?? decNumber(buf, off + 329, 8) ?? 0;
+			this.devmin = exForFields?.devmin ?? gexForFields?.devmin ?? decNumber(buf, off + 337, 8) ?? 0;
 			/* c8 ignore stop */
 			if (buf[off + 475] !== 0) this.path = decString(buf, off + 345, 155) + "/" + this.path;
 			else {
@@ -33616,7 +33640,7 @@ var Header = class {
 	}
 	#slurp(ex, gex = false) {
 		Object.assign(this, Object.fromEntries(Object.entries(ex).filter(([k, v]) => {
-			return !(v === null || v === void 0 || k === "path" && gex || k === "linkpath" && gex || k === "global");
+			return !(v === null || v === void 0 || k === "size" && Number(v) < 0 || k === "path" && gex || k === "linkpath" && gex || k === "global");
 		})));
 	}
 	encode(buf, off = 0) {
@@ -33816,11 +33840,38 @@ const parseKVLine = (set, line) => {
 	const r = kv.shift();
 	if (!r) return set;
 	const k = r.replace(/^SCHILY\.(dev|ino|nlink)/, "$1");
-	const v = kv.join("=");
-	set[k] = /^([A-Z]+\.)?([mac]|birth|creation)time$/.test(k) ? /* @__PURE__ */ new Date(Number(v) * 1e3) : /^[0-9]+$/.test(v) ? +v : v;
+	const v = kv.join("=").replace(/\0.*/, "");
+	switch (k) {
+		case "path":
+		case "linkpath":
+		case "type":
+		case "charset":
+		case "comment":
+		case "gname":
+		case "uname":
+			set[k] = v;
+			break;
+		case "ctime":
+		case "atime":
+		case "mtime":
+			set[k] = /* @__PURE__ */ new Date(Number(v) * 1e3);
+			break;
+		case "size":
+			const s = +v;
+			if (s >= 0) set[k] = s;
+			break;
+		case "gid":
+		case "uid":
+		case "dev":
+		case "ino":
+		case "nlink":
+		case "mode":
+			set[k] = +v;
+			break;
+	}
 	return set;
 };
-const normalizeWindowsPath = (process.env.TESTING_TAR_FAKE_PLATFORM || process.platform) !== "win32" ? (p) => p : (p) => p && p.replaceAll(/\\/g, "/");
+const normalizeWindowsPath = (process.env.TESTING_TAR_FAKE_PLATFORM || process.platform) !== "win32" ? (p) => String(p) : (p) => String(p).replaceAll(/\\/g, "/");
 //#endregion
 //#region node_modules/tar/dist/esm/read-entry.js
 var ReadEntry = class extends Minipass {
@@ -33981,6 +34032,10 @@ const SAW_VALID_ENTRY = Symbol("sawValidEntry");
 const SAW_NULL_BLOCK = Symbol("sawNullBlock");
 const SAW_EOF = Symbol("sawEOF");
 const CLOSESTREAM = Symbol("closeStream");
+const MAX_DECOMPRESSION_RATIO = 1e3;
+const COMPRESSEDBYTESREAD = Symbol("compressedBytesRead");
+const DECOMPRESSEDBYTESREAD = Symbol("decompressedBytesRead");
+const CHECKDECOMPRESSIONRATIO = Symbol("checkDecompressionRatio");
 const noop = () => true;
 var Parser = class extends EventEmitter {
 	file;
@@ -33989,6 +34044,7 @@ var Parser = class extends EventEmitter {
 	filter;
 	brotli;
 	zstd;
+	maxDecompressionRatio;
 	writable = true;
 	readable = false;
 	[QUEUE] = [];
@@ -34008,6 +34064,8 @@ var Parser = class extends EventEmitter {
 	[WRITING] = false;
 	[CONSUMING] = false;
 	[EMITTEDEND] = false;
+	[COMPRESSEDBYTESREAD] = 0;
+	[DECOMPRESSEDBYTESREAD] = 0;
 	constructor(opt = {}) {
 		super();
 		this.file = opt.file || "";
@@ -34021,6 +34079,7 @@ var Parser = class extends EventEmitter {
 			this.emit("end");
 		});
 		this.strict = !!opt.strict;
+		this.maxDecompressionRatio = typeof opt.maxDecompressionRatio === "number" ? opt.maxDecompressionRatio : MAX_DECOMPRESSION_RATIO;
 		this.maxMetaEntrySize = opt.maxMetaEntrySize || maxMetaEntrySize;
 		this.filter = typeof opt.filter === "function" ? opt.filter : noop;
 		const isTBR = opt.file && (opt.file.endsWith(".tar.br") || opt.file.endsWith(".tbr"));
@@ -34187,9 +34246,28 @@ while (this[PROCESSENTRY](this[QUEUE].shift()));
 		}
 	}
 	abort(error) {
+		if (this[ABORTED]) return;
+		if (this[UNZIP]) {
+			const u = this[UNZIP];
+			/* c8 ignore start */
+			u.write = () => true;
+			u.end = () => u;
+			u.emit = () => false;
+			/* c8 ignore stop */
+			u.destroy?.();
+		}
 		this[ABORTED] = true;
 		this.emit("abort", error);
 		this.warn("TAR_ABORT", error, { recoverable: false });
+	}
+	[CHECKDECOMPRESSIONRATIO](chunk) {
+		this[DECOMPRESSEDBYTESREAD] += chunk.length;
+		const ratio = this[DECOMPRESSEDBYTESREAD] / this[COMPRESSEDBYTESREAD];
+		if (ratio > this.maxDecompressionRatio) {
+			this.abort(/* @__PURE__ */ new Error(`max decompression ratio exceeded: ${ratio.toFixed(2)} > ${this.maxDecompressionRatio}`));
+			return false;
+		}
+		return true;
 	}
 	write(chunk, encoding, cb) {
 		if (typeof encoding === "function") {
@@ -34244,13 +34322,18 @@ while (this[PROCESSENTRY](this[QUEUE].shift()));
 				const ended = this[ENDED];
 				this[ENDED] = false;
 				this[UNZIP] = this[UNZIP] === void 0 ? new Unzip({}) : isZstd ? new ZstdDecompress({}) : new BrotliDecompress({});
-				this[UNZIP].on("data", (chunk) => this[CONSUMECHUNK](chunk));
-				this[UNZIP].on("error", (er) => this.abort(er));
+				this[UNZIP].on("data", (chunk) => {
+					if (this[CHECKDECOMPRESSIONRATIO](chunk)) this[CONSUMECHUNK](chunk);
+				});
+				this[UNZIP].on("error", (er) => {
+					if (!this[ABORTED]) this.abort(er);
+				});
 				this[UNZIP].on("end", () => {
 					this[ENDED] = true;
 					this[CONSUMECHUNK]();
 				});
 				this[WRITING] = true;
+				this[COMPRESSEDBYTESREAD] += chunk.length;
 				const ret = !!this[UNZIP][ended ? "end" : "write"](chunk);
 				this[WRITING] = false;
 				cb?.();
@@ -34258,8 +34341,10 @@ while (this[PROCESSENTRY](this[QUEUE].shift()));
 			}
 		}
 		this[WRITING] = true;
-		if (this[UNZIP]) this[UNZIP].write(chunk);
-		else this[CONSUMECHUNK](chunk);
+		if (this[UNZIP]) {
+			this[COMPRESSEDBYTESREAD] += chunk.length;
+			this[UNZIP].write(chunk);
+		} else this[CONSUMECHUNK](chunk);
 		this[WRITING] = false;
 		const ret = this[QUEUE].length > 0 ? false : this[READENTRY] ? this[READENTRY].flowing : true;
 		if (!ret && this[QUEUE].length === 0) this[READENTRY]?.once("drain", () => this.emit("drain"));
@@ -34274,7 +34359,7 @@ while (this[PROCESSENTRY](this[QUEUE].shift()));
 		if (this[ENDED] && !this[EMITTEDEND] && !this[ABORTED] && !this[CONSUMING]) {
 			this[EMITTEDEND] = true;
 			const entry = this[WRITEENTRY];
-			if (entry && entry.blockRemain) {
+			if (entry?.blockRemain) {
 				const have = this[BUFFER] ? this[BUFFER].length : 0;
 				this.warn("TAR_BAD_ARCHIVE", `Truncated input (needed ${entry.blockRemain} more bytes, only ${have} available)`, { entry });
 				if (this[BUFFER]) entry.write(this[BUFFER]);
@@ -34337,7 +34422,10 @@ while (this[PROCESSENTRY](this[QUEUE].shift()));
 		if (cb) this.once("finish", cb);
 		if (!this[ABORTED]) if (this[UNZIP]) {
 			/* c8 ignore start */
-			if (chunk) this[UNZIP].write(chunk);
+			if (chunk) {
+				this[COMPRESSEDBYTESREAD] += chunk.length;
+				this[UNZIP].write(chunk);
+			}
 			/* c8 ignore stop */
 			this[UNZIP].end();
 		} else {
@@ -34372,13 +34460,20 @@ const onReadEntryFunction = (opt) => {
 const filesFilter = (opt, files) => {
 	const map = new Map(files.map((f) => [stripTrailingSlashes(f), true]));
 	const filter = opt.filter;
-	const mapHas = (file, r = "") => {
+	const MAX = 100;
+	const mapHas = (file, r = "", depth = 0) => {
+		/* c8 ignore start - excessive caution */
+		if (depth >= MAX) {
+			map.set(file, false);
+			return false;
+		}
+		/* c8 ignore stop */
 		const root = r || parse(file).root || ".";
 		let ret;
 		if (file === root) ret = false;
 		else {
 			const m = map.get(file);
-			ret = m !== void 0 ? m : mapHas(dirname(file), root);
+			ret = m !== void 0 ? m : mapHas(dirname(file), root, depth + 1);
 		}
 		map.set(file, ret);
 		return ret;
