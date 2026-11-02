@@ -29031,7 +29031,7 @@ var require_follow_redirects = /* @__PURE__ */ __commonJSMin(((exports, module) 
 			options.headers = {};
 			for (var i = 0; i < headerList.length; i += 2) options.headers[headerList[i]] = headerList[i + 1];
 		}
-		if (!isArray(options.sensitiveHeaders)) options.sensitiveHeaders = [];
+		if (!Array.isArray(options.sensitiveHeaders)) options.sensitiveHeaders = [];
 		if (options.host) {
 			if (!options.hostname) options.hostname = options.host;
 			delete options.host;
@@ -29246,9 +29246,6 @@ var require_follow_redirects = /* @__PURE__ */ __commonJSMin(((exports, module) 
 		assert$1(isString(subdomain) && isString(domain));
 		var dot = subdomain.length - domain.length - 1;
 		return dot > 0 && subdomain[dot] === "." && subdomain.endsWith(domain);
-	}
-	function isArray(value) {
-		return value instanceof Array;
 	}
 	function isString(value) {
 		return typeof value === "string" || value instanceof String;
